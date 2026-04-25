@@ -50,6 +50,7 @@ export default function RosterPage() {
         const { data, error } = await supabase
           .from("members")
           .select("*")
+          .eq("is_active", true)
           .order("rank_tier", { ascending: true })
           .order("influence", { ascending: false })
 

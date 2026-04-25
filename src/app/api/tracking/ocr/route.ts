@@ -144,6 +144,7 @@ export async function POST(req: NextRequest) {
         const { data: members, error: membersError } = await adminClient
           .from("members")
           .select("id, canonical_name")
+          .eq("is_active", true)
           .eq("faction_id", factionId)
 
         if (membersError || !members) {
