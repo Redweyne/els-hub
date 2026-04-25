@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Clock, CheckCircle2, X } from "lucide-react"
+import { apiPath } from "@/lib/paths"
 
 interface AccountRequest {
   id: string
@@ -35,7 +36,7 @@ export default function RequestsPage() {
 
   const loadRequests = async () => {
     try {
-      const response = await fetch("/api/admin/requests")
+      const response = await fetch(apiPath("/admin/requests"))
       if (!response.ok) throw new Error("Failed to load requests")
       const data = await response.json()
       setRequests(data.requests || [])
@@ -49,7 +50,7 @@ export default function RequestsPage() {
   const handleApprove = async (id: string) => {
     setApproving(id)
     try {
-      const response = await fetch(`/api/admin/requests/${id}/approve`, {
+      const response = await fetch(apiPath(`/admin/requests/${id}/approve`), {
         method: "POST",
       })
 
@@ -72,7 +73,7 @@ export default function RequestsPage() {
 
     setApproving(id)
     try {
-      const response = await fetch(`/api/admin/requests/${id}/reject`, {
+      const response = await fetch(apiPath(`/admin/requests/${id}/reject`), {
         method: "POST",
       })
 

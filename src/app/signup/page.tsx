@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { FormField } from "@/components/ui/form-field"
 import { Card, CardContent } from "@/components/ui/card"
 import { Upload, AlertCircle, CheckCircle2 } from "lucide-react"
+import { apiPath, appPath } from "@/lib/paths"
 
 interface OCRResult {
   player_id: string
@@ -44,7 +45,7 @@ export default function SignupPage() {
       const formData = new FormData()
       formData.append("screenshot", file)
 
-      const response = await fetch("/api/signup/ocr", {
+      const response = await fetch(apiPath("/signup/ocr"), {
         method: "POST",
         body: formData,
       })
@@ -99,7 +100,7 @@ export default function SignupPage() {
 
     setIsLoading(true)
     try {
-      const response = await fetch("/api/signup/submit", {
+      const response = await fetch(apiPath("/signup/submit"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -161,7 +162,7 @@ export default function SignupPage() {
               <Card className="bg-smoke/70 border-ash overflow-hidden">
                 <CardContent className="p-0">
                   <img
-                    src="/api/example-screenshot"
+                    src={appPath("/images/account-example.png")}
                     alt="Example account screenshot"
                     className="w-full max-h-96 object-cover rounded-lg"
                   />

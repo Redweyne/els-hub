@@ -56,7 +56,7 @@ export function AuthPill() {
   if (!user) {
     return (
       <div className="flex gap-2">
-        <Link href="/els/login">
+        <Link href="/login">
           <Button variant="ghost" size="sm" className="text-bone/70 hover:text-bone text-xs">
             Log in
           </Button>
@@ -97,7 +97,7 @@ export function AuthPill() {
           <div className="px-4 py-2 border-b border-ash/50">
             <p className="text-xs text-bone/70">{user.email}</p>
           </div>
-          <Link href="/els/admin/roster" className="block">
+          <Link href="/admin/roster" className="block">
             <button
               role="menuitem"
               className="w-full text-left px-4 py-2 text-sm text-bone hover:bg-ash transition-colors focus-visible:outline-none focus-visible:bg-ash"

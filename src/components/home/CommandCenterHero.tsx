@@ -184,7 +184,7 @@ export function CommandCenterHero({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 1.6, duration: 0.6 }}
-          className="absolute bottom-24 md:bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-none"
+          className="absolute bottom-8 left-1/2 -translate-x-1/2 hidden md:flex flex-col items-center gap-2 pointer-events-none"
           aria-hidden="true"
         >
           <span className="text-[9px] uppercase tracking-[0.35em] text-bone/40 font-body">

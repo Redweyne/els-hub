@@ -16,7 +16,7 @@ import { cn } from "@/lib/cn"
 export default function LoginPage() {
   const router = useRouter()
   const reducedMotion = useReducedMotion()
-  const [email, setEmail] = useState("")
+  const [identifier, setIdentifier] = useState("")
   const [password, setPassword] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
@@ -33,13 +33,30 @@ export default function LoginPage() {
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       )
 
-      const { error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
+      const loginId = identifier.trim()
+      const emailsToTry = loginId.includes("@")
+        ? [loginId.toLowerCase()]
+        : [`${loginId}@els.com`.toLowerCase(), `${loginId}@guest.com`.toLowerCase()]
 
-      if (authError) {
-        setError(authError.message)
+      let authErrorMessage = "Invalid username or password"
+      let signedIn = false
+
+      for (const email of emailsToTry) {
+        const { error: authError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        })
+
+        if (!authError) {
+          signedIn = true
+          break
+        }
+
+        authErrorMessage = authError.message
+      }
+
+      if (!signedIn) {
+        setError(authErrorMessage)
         setShakeKey((k) => k + 1)
         setIsLoading(false)
         return
@@ -144,14 +161,13 @@ export default function LoginPage() {
 
             <form onSubmit={handleLogin} className="mt-6 space-y-4">
               <FormField
-                label="Email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@els.com"
+                label="Username or Email"
+                type="text"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="Redweyne"
                 disabled={isLoading}
-                autoComplete="email"
-                inputMode="email"
+                autoComplete="username"
                 required
               />
 

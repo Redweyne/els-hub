@@ -8,6 +8,7 @@ import { createBrowserClient } from "@supabase/ssr"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Upload, AlertCircle, Loader2, CheckCircle2, Plus, RefreshCw } from "lucide-react"
+import { apiPath } from "@/lib/paths"
 
 interface ProgressUpdate {
   type: string
@@ -162,7 +163,7 @@ export default function UploadFCUPage() {
         formData.append("event_title", eventTitle)
       }
 
-      const response = await fetch("/api/tracking/ocr", {
+      const response = await fetch(apiPath("/tracking/ocr"), {
         method: "POST",
         body: formData,
       })

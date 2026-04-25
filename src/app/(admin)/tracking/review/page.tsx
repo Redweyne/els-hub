@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Loader2, CheckCircle2, Plus } from "lucide-react"
 import { motion } from "framer-motion"
+import { apiPath } from "@/lib/paths"
 
 interface ReviewItem {
   id: string
@@ -65,7 +66,7 @@ function ReviewQueueContent() {
 
     setIsResolving(true)
     try {
-      const response = await fetch(`/api/admin/review/${items[currentIndex].id}/resolve`, {
+      const response = await fetch(apiPath(`/admin/review/${items[currentIndex].id}/resolve`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -100,7 +101,7 @@ function ReviewQueueContent() {
 
     setIsResolving(true)
     try {
-      const response = await fetch(`/api/admin/review/${items[currentIndex].id}/resolve`, {
+      const response = await fetch(apiPath(`/admin/review/${items[currentIndex].id}/resolve`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
