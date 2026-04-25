@@ -1,26 +1,444 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   ELS Design Tokens — "cinematic mafia"
+   All visual decisions live here. Phase 2 white-labelling = swap this file.
+   ========================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* --- Brand palette (semantic) --- */
+  --ink: #0a0908; /* near-black, page base */
+  --bone: #e8e2d5; /* warm off-white, primary text */
+  --blood: #8b0000; /* deep crimson, primary action */
+  --ember: #c9a227; /* aged gold, accent + rings */
+  --smoke: #2c2c2c; /* card surface */
+  --ash: rgba(255, 255, 255, 0.08); /* hairline border */
+
+  /* --- Brand shades --- */
+  --ink-50: #1a1817;
+  --ink-100: #221f1d;
+  --blood-dark: #580000;
+  --blood-light: #a31b1b;
+  --ember-dark: #8c6f0f;
+  --ember-light: #e0bd4d;
+  --bone-dim: #8a8680;
+
+  /* --- shadcn-compatible semantic tokens (mapped to brand) --- */
+  --background: var(--ink);
+  --foreground: var(--bone);
+  --card: var(--smoke);
+  --card-foreground: var(--bone);
+  --popover: var(--ink-100);
+  --popover-foreground: var(--bone);
+  --primary: var(--blood);
+  --primary-foreground: var(--bone);
+  --secondary: var(--smoke);
+  --secondary-foreground: var(--bone);
+  --muted: var(--smoke);
+  --muted-foreground: var(--bone-dim);
+  --accent: var(--ember);
+  --accent-foreground: var(--ink);
+  --destructive: #b91c1c;
+  --destructive-foreground: var(--bone);
+  --border: var(--ash);
+  --input: var(--ash);
+  --ring: var(--ember);
+  --radius: 0.5rem;
+
+  /* --- Motion tokens --- */
+  --ease-cinema: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --dur-fast: 180ms;
+  --dur-med: 420ms;
+  --dur-slow: 720ms;
 }
+
+/* ==========================================================================
+   Register tokens with Tailwind v4
+   This makes `bg-ink`, `text-bone`, `font-display` etc. available as classes.
+   ========================================================================== */
 
 @theme inline {
+  /* Semantic shadcn-style utilities */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Brand aliases — use directly: bg-ink, text-ember, border-ash */
+  --color-ink: var(--ink);
+  --color-bone: var(--bone);
+  --color-blood: var(--blood);
+  --color-ember: var(--ember);
+  --color-smoke: var(--smoke);
+  --color-ash: var(--ash);
+
+  /* Fonts */
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-mono: var(--font-mono);
+
+  /* Radii */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Easings */
+  --ease-cinema: var(--ease-cinema);
+  --ease-out-quart: var(--ease-out-quart);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ==========================================================================
+   Base element styles
+   ========================================================================== */
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body), system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+@media (min-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: inherit;
+  }
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display), Georgia, serif;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Utility layers
+   ========================================================================== */
+
+@utility film-grain {
+  position: relative;
+}
+@utility film-grain {
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 400'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.9 0 0 0 0 0.87 0 0 0 0 0.77 0 0 0 0.12 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.6;
+    pointer-events: none;
+    mix-blend-mode: soft-light;
+    z-index: 0;
+  }
+}
+
+@utility bg-ember-glow {
+  background-image: radial-gradient(
+    circle at 50% -20%,
+    color-mix(in oklab, var(--ember) 30%, transparent),
+    transparent 55%
+  );
+}
+
+@utility bg-blood-glow {
+  background-image: radial-gradient(
+    ellipse at 50% 120%,
+    color-mix(in oklab, var(--blood) 45%, transparent),
+    transparent 60%
+  );
+}
+
+/* Custom scrollbar in the dark palette */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--ash);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--ember) 40%, transparent);
+}
+
+/* Focus ring consistent across the app */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ==========================================================================
+   E1 — Surface & depth system
+   Three-layer dark surfaces with subtle elevation cues.
+   ========================================================================== */
+
+@utility surface-1 {
+  background-color: var(--ink);
+}
+
+@utility surface-2 {
+  background-image: linear-gradient(
+    180deg,
+    var(--ink-100) 0%,
+    var(--ink) 100%
+  );
+}
+
+@utility surface-3 {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--smoke) 80%, var(--ink-100)) 0%,
+    var(--ink-100) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    0 12px 24px -6px rgba(139, 0, 0, 0.15);
+}
+
+@utility parchment {
+  background-color: var(--ink-100);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><filter id='p'><feTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.9 0 0 0 0 0.87 0 0 0 0 0.78 0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23p)'/></svg>");
+  background-size: 200px 200px;
+}
+
+/* ==========================================================================
+   E1 — Aurora orbs
+   Large blurred radial gradients that drift slowly behind hero sections.
+   GPU-only via transform animation. Disabled for reduced motion below.
+   ========================================================================== */
+
+@keyframes aurora-drift-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(28px, -32px, 0) scale(1.08);
+  }
+  100% {
+    transform: translate3d(-18px, 18px, 0) scale(0.96);
+  }
+}
+
+@keyframes aurora-drift-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-36px, 24px, 0) scale(1.1);
+  }
+  100% {
+    transform: translate3d(20px, -14px, 0) scale(0.98);
+  }
+}
+
+@utility aurora-orb-ember {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--ember) 28%, transparent) 0%,
+    transparent 70%
+  );
+  filter: blur(48px);
+  pointer-events: none;
+  will-change: transform;
+  animation: aurora-drift-a 28s ease-in-out infinite alternate;
+}
+
+@utility aurora-orb-blood {
+  position: absolute;
+  width: 500px;
+  height: 500px;
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--blood) 32%, transparent) 0%,
+    transparent 70%
+  );
+  filter: blur(56px);
+  pointer-events: none;
+  will-change: transform;
+  animation: aurora-drift-b 34s ease-in-out -10s infinite alternate;
+}
+
+/* ==========================================================================
+   E1 — Shimmer (skeleton replacement)
+   Moving gradient sweep across a surface, ember-tinted.
+   ========================================================================== */
+
+@keyframes shimmer-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@utility shimmer {
+  position: relative;
+  overflow: hidden;
+  background-color: color-mix(in oklab, var(--smoke) 60%, transparent);
+}
+
+@utility shimmer {
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(
+      110deg,
+      transparent 0%,
+      color-mix(in oklab, var(--ember) 14%, transparent) 45%,
+      color-mix(in oklab, var(--ember) 6%, transparent) 55%,
+      transparent 100%
+    );
+    animation: shimmer-sweep 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    pointer-events: none;
+    will-change: transform;
+  }
+}
+
+/* ==========================================================================
+   E1 — Motion micro-utilities
+   Breathing pulse for CTAs, pulse-ring for focus flashes.
+   ========================================================================== */
+
+@keyframes breath {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+}
+
+@utility breath {
+  animation: breath 3.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0
+      color-mix(in oklab, var(--ember) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 12px
+      color-mix(in oklab, var(--ember) 0%, transparent);
+  }
+}
+
+@utility pulse-ring-once {
+  animation: pulse-ring 1s ease-out 1;
+}
+
+/* ==========================================================================
+   E1 — Animated film grain (drifting)
+   Subtle noise layer that shifts imperceptibly — keeps dark surfaces alive.
+   ========================================================================== */
+
+@keyframes noise-drift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(-2%, 1%);
+  }
+  50% {
+    transform: translate(1%, -2%);
+  }
+  75% {
+    transform: translate(-1%, -1%);
+  }
+}
+
+@utility film-grain-drift {
+  position: relative;
+}
+
+@utility film-grain-drift {
+  &::after {
+    content: "";
+    position: absolute;
+    inset: -5%;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 400'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.9 0 0 0 0 0.87 0 0 0 0 0.77 0 0 0 0.08 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.5;
+    pointer-events: none;
+    mix-blend-mode: soft-light;
+    z-index: 0;
+    animation: noise-drift 8s ease-in-out infinite;
+    will-change: transform;
+  }
+}
+
+/* ==========================================================================
+   Reduced motion — blanket override for animated utilities
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-orb-ember,
+  .aurora-orb-blood {
+    animation: none !important;
+  }
+  .shimmer::after {
+    animation: none !important;
+    opacity: 0.3;
+  }
+  .breath,
+  .pulse-ring-once {
+    animation: none !important;
+  }
+  .film-grain-drift::after {
+    animation: none !important;
+  }
 }
