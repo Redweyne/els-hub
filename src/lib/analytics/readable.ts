@@ -35,6 +35,7 @@ export interface SessionUser {
 
 export interface SessionSummary {
   sessionId: string
+  visitorKey: string
   firstSeen: string
   lastSeen: string
   durationSeconds: number
@@ -58,6 +59,59 @@ export interface SessionSummary {
     sentence: string
     path: string
   }>
+}
+
+export interface VisitorSummary {
+  visitorKey: string
+  name: string
+  firstSeen: string
+  lastSeen: string
+  sessionCount: number
+  eventCount: number
+  pageViews: number
+  clicks: number
+  totalDurationSeconds: number
+  sources: string[]
+  pages: string[]
+  device: DeviceInfo
+  geo?: GeoInfo | null
+  ip: string
+  user?: SessionUser | null
+  humanScore: number
+  humanSignals: string[]
+  sessions: SessionSummary[]
+  journey: Array<{
+    at: string
+    sentence: string
+    path: string
+    sessionId: string
+  }>
+}
+
+export interface AnalyticsReport {
+  sessions: SessionSummary[]
+  visitors: VisitorSummary[]
+  generatedAt: string
+  range: {
+    days: number
+    from: string
+    to: string
+  }
+  totals: {
+    sessions: number
+    visitors: number
+    pageViews: number
+    clicks: number
+    events: number
+    live: number
+    averageHumanScore: number
+  }
+  breakdowns: {
+    sources: Array<{ label: string; count: number }>
+    devices: Array<{ label: string; count: number }>
+    pages: Array<{ label: string; count: number }>
+    days: Array<{ label: string; sessions: number; actions: number }>
+  }
 }
 
 const pageNames: Record<string, string> = {

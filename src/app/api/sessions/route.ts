@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { readSessionSummaries, storeAnalyticsEvent, type ClientAnalyticsEvent } from "@/lib/analytics/storage"
+import { readAnalyticsReport, storeAnalyticsEvent, type ClientAnalyticsEvent } from "@/lib/analytics/storage"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const {
     data: { user },
@@ -46,8 +46,9 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
-  const sessions = await readSessionSummaries()
-  return NextResponse.json({ sessions, generatedAt: new Date().toISOString() })
+  const days = Number(request.nextUrl.searchParams.get("days") || "7")
+  const report = await readAnalyticsReport(Number.isFinite(days) ? Math.min(Math.max(days, 1), 90) : 7)
+  return NextResponse.json(report)
 }
 
 function sanitizeData(data?: Record<string, unknown>) {

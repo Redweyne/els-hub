@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { BottomNav } from "@/components/layout/BottomNav"
 import { SessionViewer } from "@/components/analytics/SessionViewer"
-import { readSessionSummaries } from "@/lib/analytics/storage"
+import { readAnalyticsReport } from "@/lib/analytics/storage"
 import { createClient } from "@/lib/supabase/server"
 import { appPath } from "@/lib/paths"
 
@@ -26,11 +26,11 @@ export default async function ViewSessionsPage() {
     redirect(appPath("/"))
   }
 
-  const sessions = await readSessionSummaries()
+  const report = await readAnalyticsReport(7)
 
   return (
     <>
-      <SessionViewer initialSessions={sessions} />
+      <SessionViewer initialReport={report} />
       <BottomNav />
     </>
   )

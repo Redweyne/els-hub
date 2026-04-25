@@ -4,7 +4,18 @@ import { promises as fs } from "fs"
 import path from "path"
 import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
-import { describeEvent, pageLabel, sourceLabel, type SessionEventType } from "./readable"
+import {
+  describeEvent,
+  pageLabel,
+  sourceLabel,
+  type AnalyticsReport,
+  type DeviceInfo,
+  type GeoInfo,
+  type SessionEventType,
+  type SessionSummary,
+  type SessionUser,
+  type VisitorSummary,
+} from "./readable"
 
 export interface ClientAnalyticsEvent {
   sessionId: string
@@ -28,59 +39,6 @@ export interface StoredAnalyticsEvent extends ClientAnalyticsEvent {
   geo?: GeoInfo | null
   user?: SessionUser | null
   sentence: string
-}
-
-export interface DeviceInfo {
-  browser: string
-  os: string
-  deviceType: "Phone" | "Tablet" | "Desktop"
-  isTouch: boolean
-}
-
-export interface GeoInfo {
-  city?: string
-  region?: string
-  country?: string
-  isp?: string
-  timezone?: string
-  mobile?: boolean
-  proxy?: boolean
-  hosting?: boolean
-}
-
-export interface SessionUser {
-  authUserId: string
-  profileId?: string
-  username?: string
-  displayName?: string | null
-  role?: string
-}
-
-export interface SessionSummary {
-  sessionId: string
-  firstSeen: string
-  lastSeen: string
-  durationSeconds: number
-  eventCount: number
-  pageViews: number
-  clicks: number
-  source: string
-  entryPage: string
-  lastPage: string
-  ip: string
-  geo?: GeoInfo | null
-  userAgent: string
-  device: DeviceInfo
-  user?: SessionUser | null
-  humanScore: number
-  humanSignals: string[]
-  bot: boolean
-  timeline: Array<{
-    at: string
-    type: SessionEventType
-    sentence: string
-    path: string
-  }>
 }
 
 const analyticsDir = process.env.ANALYTICS_DATA_DIR || path.join(process.cwd(), ".data")
@@ -120,8 +78,53 @@ export async function storeAnalyticsEvent(event: ClientAnalyticsEvent) {
   return stored
 }
 
+export async function readAnalyticsReport(days = 7, limit = 250): Promise<AnalyticsReport> {
+  const events = await readEvents()
+  const to = new Date()
+  const from = new Date(to.getTime() - Math.max(1, days) * 24 * 60 * 60 * 1000)
+  const scopedEvents = events.filter((event) => {
+    const at = new Date(event.occurredAt || event.receivedAt)
+    return at >= from && at <= to
+  })
+  const sessions = summarizeSessions(scopedEvents, limit)
+  const visitors = summarizeVisitors(sessions)
+  const currentTime = to.getTime()
+
+  return {
+    sessions,
+    visitors,
+    generatedAt: to.toISOString(),
+    range: {
+      days,
+      from: from.toISOString(),
+      to: to.toISOString(),
+    },
+    totals: {
+      sessions: sessions.length,
+      visitors: visitors.length,
+      pageViews: sessions.reduce((sum, session) => sum + session.pageViews, 0),
+      clicks: sessions.reduce((sum, session) => sum + session.clicks, 0),
+      events: sessions.reduce((sum, session) => sum + session.eventCount, 0),
+      live: sessions.filter((session) => currentTime - new Date(session.lastSeen).getTime() < 2 * 60 * 1000).length,
+      averageHumanScore: Math.round(
+        sessions.reduce((sum, session) => sum + session.humanScore, 0) / Math.max(1, sessions.length),
+      ),
+    },
+    breakdowns: {
+      sources: countBy(sessions.map((session) => session.source)).slice(0, 8),
+      devices: countBy(sessions.map((session) => `${session.device.deviceType} / ${session.device.os}`)).slice(0, 8),
+      pages: countBy(sessions.flatMap((session) => session.timeline.filter((item) => item.type === "page_view").map((item) => pageLabel(item.path)))).slice(0, 10),
+      days: countDays(sessions, from, to),
+    },
+  }
+}
+
 export async function readSessionSummaries(limit = 80): Promise<SessionSummary[]> {
   const events = await readEvents()
+  return summarizeSessions(events, limit)
+}
+
+function summarizeSessions(events: StoredAnalyticsEvent[], limit: number): SessionSummary[] {
   const sessions = new Map<string, SessionSummary>()
 
   for (const event of events) {
@@ -131,6 +134,7 @@ export async function readSessionSummaries(limit = 80): Promise<SessionSummary[]
     if (!existing) {
       sessions.set(event.sessionId, {
         sessionId: event.sessionId,
+        visitorKey: getVisitorKey(event),
         firstSeen: at,
         lastSeen: at,
         durationSeconds: 0,
@@ -195,6 +199,118 @@ export async function readSessionSummaries(limit = 80): Promise<SessionSummary[]
     .filter((session) => !session.bot && session.humanScore >= 35)
     .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
     .slice(0, limit)
+}
+
+function summarizeVisitors(sessions: SessionSummary[]): VisitorSummary[] {
+  const visitors = new Map<string, VisitorSummary>()
+
+  for (const session of sessions) {
+    const existing = visitors.get(session.visitorKey)
+    if (!existing) {
+      visitors.set(session.visitorKey, {
+        visitorKey: session.visitorKey,
+        name: visitorName(session),
+        firstSeen: session.firstSeen,
+        lastSeen: session.lastSeen,
+        sessionCount: 0,
+        eventCount: 0,
+        pageViews: 0,
+        clicks: 0,
+        totalDurationSeconds: 0,
+        sources: [],
+        pages: [],
+        device: session.device,
+        geo: session.geo,
+        ip: session.ip,
+        user: session.user,
+        humanScore: session.humanScore,
+        humanSignals: session.humanSignals,
+        sessions: [],
+        journey: [],
+      })
+    }
+
+    const visitor = visitors.get(session.visitorKey)!
+    visitor.firstSeen = session.firstSeen < visitor.firstSeen ? session.firstSeen : visitor.firstSeen
+    visitor.lastSeen = session.lastSeen > visitor.lastSeen ? session.lastSeen : visitor.lastSeen
+    visitor.sessionCount += 1
+    visitor.eventCount += session.eventCount
+    visitor.pageViews += session.pageViews
+    visitor.clicks += session.clicks
+    visitor.totalDurationSeconds += session.durationSeconds
+    visitor.sources = Array.from(new Set([...visitor.sources, session.source]))
+    visitor.pages = Array.from(new Set([...visitor.pages, session.entryPage, session.lastPage]))
+    visitor.humanScore = Math.max(visitor.humanScore, session.humanScore)
+    visitor.humanSignals = Array.from(new Set([...visitor.humanSignals, ...session.humanSignals]))
+    visitor.sessions.push(session)
+    visitor.journey.push(
+      ...session.timeline.map((item) => ({
+        at: item.at,
+        sentence: item.sentence,
+        path: item.path,
+        sessionId: session.sessionId,
+      })),
+    )
+  }
+
+  return Array.from(visitors.values())
+    .map((visitor) => ({
+      ...visitor,
+      sessions: visitor.sessions.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime()),
+      journey: visitor.journey
+        .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+        .slice(0, 60),
+    }))
+    .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
+}
+
+function getVisitorKey(event: StoredAnalyticsEvent) {
+  if (event.user?.authUserId) return `user:${event.user.authUserId}`
+  return `device:${simpleHash(`${event.ip}|${event.userAgent}`)}`
+}
+
+function visitorName(session: SessionSummary) {
+  if (session.user?.displayName) return session.user.displayName
+  if (session.user?.username) return session.user.username
+  const parts = [session.geo?.city, session.geo?.country].filter(Boolean)
+  return `${session.device.deviceType} visitor${parts.length ? ` from ${parts.join(", ")}` : ""}`
+}
+
+function countBy(items: string[]) {
+  const counts = new Map<string, number>()
+  for (const item of items.filter(Boolean)) {
+    counts.set(item, (counts.get(item) || 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+}
+
+function countDays(sessions: SessionSummary[], from: Date, to: Date) {
+  const buckets = new Map<string, { label: string; sessions: number; actions: number }>()
+  for (let day = new Date(from); day <= to; day.setDate(day.getDate() + 1)) {
+    const label = day.toISOString().slice(0, 10)
+    buckets.set(label, { label, sessions: 0, actions: 0 })
+  }
+
+  for (const session of sessions) {
+    const label = new Date(session.firstSeen).toISOString().slice(0, 10)
+    const bucket = buckets.get(label) || { label, sessions: 0, actions: 0 }
+    bucket.sessions += 1
+    bucket.actions += session.clicks + session.pageViews
+    buckets.set(label, bucket)
+  }
+
+  return Array.from(buckets.values()).slice(-31)
+}
+
+function simpleHash(value: string) {
+  let hash = 0
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
 }
 
 async function readEvents() {
