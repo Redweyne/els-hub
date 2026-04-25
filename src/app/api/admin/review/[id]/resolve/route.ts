@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { canonicalAlias } from "@/lib/match/fuzzy"
 
 export async function POST(
   req: NextRequest,
@@ -20,6 +21,12 @@ export async function POST(
 
     // Determine resolution type
     let resolutionType = resolution || (member_id ? "matched" : "new_member")
+
+    const { data: reviewItem } = await adminClient
+      .from("review_queue")
+      .select("raw_name")
+      .eq("id", id)
+      .maybeSingle()
 
     // Update review queue item
     const { error: updateError } = await adminClient
@@ -63,6 +70,25 @@ export async function POST(
         if (scoreError) {
           console.error("Event scores creation error:", scoreError)
           return NextResponse.json({ error: "Failed to create event score" }, { status: 500 })
+        }
+      }
+
+      const alias = canonicalAlias(reviewItem?.raw_name || ocr_row?.player_name || "")
+      if (alias) {
+        const { error: aliasError } = await adminClient
+          .from("member_aliases")
+          .upsert(
+            {
+              member_id,
+              alias,
+              source: "manual",
+              confidence: 1,
+            },
+            { onConflict: "member_id,alias" },
+          )
+
+        if (aliasError) {
+          console.error("Alias save error:", aliasError)
         }
       }
     }

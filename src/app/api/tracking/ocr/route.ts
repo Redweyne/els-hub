@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server"
 import { createClient } from "@supabase/supabase-js"
-import { fuzzyMatch, autoResolveMatch } from "@/lib/match/fuzzy"
+import {
+  autoResolveMatch,
+  canonicalAlias,
+  fuzzyMatch,
+  isLikelyFactionMemberName,
+  shouldSaveAlias,
+  uniqueNameKey,
+} from "@/lib/match/fuzzy"
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
@@ -140,10 +147,10 @@ export async function POST(req: NextRequest) {
           sendProgress(encoder, controller, { type: "event_created", eventId })
         }
 
-        // Get all members for fuzzy matching
+        // Get all active members and known OCR aliases for matching.
         const { data: members, error: membersError } = await adminClient
           .from("members")
-          .select("id, canonical_name")
+          .select("id, canonical_name, member_aliases(alias)")
           .eq("is_active", true)
           .eq("faction_id", factionId)
 
@@ -157,10 +164,16 @@ export async function POST(req: NextRequest) {
         const memberCandidates = members.map(m => ({
           id: m.id,
           canonical_name: m.canonical_name,
+          aliases: (m.member_aliases || []).map((aliasRow: { alias: string }) => aliasRow.alias),
         }))
+        const rosterHint = memberCandidates
+          .map((member) => member.canonical_name)
+          .join(", ")
 
         const allRows: any[] = []
         const reviewQueueItems: any[] = []
+        const autoAliasRows: Array<{ member_id: string; alias: string; source: string; confidence: number }> = []
+        const seenRowKeys = new Set<string>()
 
         // Process each screenshot with Gemini
         for (let i = 0; i < screenshotFiles.length; i++) {
@@ -199,10 +212,15 @@ export async function POST(req: NextRequest) {
 
 Extract the Faction Call-Up ranking table from this screenshot. For each row, provide:
 - rank: the ranking number (integer)
-- player_name: complete player name with faction tag (e.g. "[ELS] Boss1052") - preserve ALL characters exactly as shown
+- player_name: complete player name with faction tag if visible (e.g. "[ELS] Boss1052") - preserve ALL characters exactly as shown
 - points: points value (integer)
 - accept_current: current accepts (integer)
 - accept_max: max accepts (integer)
+
+The active ELS roster is:
+${rosterHint}
+
+When a visible name clearly corresponds to a roster name, use that exact roster spelling in player_name. This matters for special characters such as ༄, ღ, 目, 폭, 無, ₩, accents, and styled letters.
 
 RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
 [
@@ -327,13 +345,20 @@ RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
             return
           }
 
-          // Fuzzy match each row
+          // Match each row. Exact/alias/strong normalized matches are auto-resolved;
+          // only genuinely ambiguous names are sent to officers.
           for (const row of rows) {
+            if (!isLikelyFactionMemberName(row.player_name)) continue
+
+            const rowKey = `${row.rank}:${uniqueNameKey(row.player_name)}:${row.points}`
+            if (seenRowKeys.has(rowKey)) continue
+            seenRowKeys.add(rowKey)
+
             const candidates = fuzzyMatch(row.player_name, memberCandidates)
             const autoResolved = autoResolveMatch(candidates)
 
             if (autoResolved) {
-              await adminClient.from("event_scores").insert({
+              await adminClient.from("event_scores").upsert({
                 event_id: eventId,
                 member_id: autoResolved.member_id,
                 rank_value: row.rank,
@@ -341,7 +366,18 @@ RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
                 accept_current: row.accept_current,
                 accept_max: row.accept_max,
                 raw_ocr_row_json: row,
+              }, {
+                onConflict: "event_id,member_id",
               })
+
+              if (shouldSaveAlias(row.player_name, autoResolved)) {
+                autoAliasRows.push({
+                  member_id: autoResolved.member_id,
+                  alias: canonicalAlias(row.player_name),
+                  source: "ocr",
+                  confidence: Math.min(0.99, autoResolved.confidence),
+                })
+              }
             } else {
               reviewQueueItems.push({
                 event_id: eventId,
@@ -361,6 +397,19 @@ RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
             fileName: file.name,
             rowCount: rows.length,
           })
+        }
+
+        if (autoAliasRows.length > 0) {
+          const uniqueAliases = Array.from(
+            new Map(autoAliasRows.map((row) => [`${row.member_id}:${row.alias}`, row])).values(),
+          )
+          const { error: aliasError } = await adminClient
+            .from("member_aliases")
+            .upsert(uniqueAliases, { onConflict: "member_id,alias" })
+
+          if (aliasError) {
+            console.error("[FCU-OCR] Alias upsert error:", aliasError)
+          }
         }
 
         // Batch insert review queue items
