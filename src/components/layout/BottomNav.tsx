@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { motion } from "framer-motion"
@@ -29,6 +30,35 @@ const tabs: Tab[] = [
 
 export function BottomNav() {
   const pathname = usePathname()
+
+  useEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return
+
+    const updateViewportOffset = () => {
+      const layoutHeight = document.documentElement.clientHeight
+      const visualBottom = viewport.offsetTop + viewport.height
+      const offset = Math.max(0, visualBottom - layoutHeight)
+      document.documentElement.style.setProperty(
+        "--visual-viewport-bottom-offset",
+        `${offset}px`,
+      )
+    }
+
+    updateViewportOffset()
+    viewport.addEventListener("resize", updateViewportOffset)
+    viewport.addEventListener("scroll", updateViewportOffset)
+    window.addEventListener("orientationchange", updateViewportOffset)
+
+    return () => {
+      viewport.removeEventListener("resize", updateViewportOffset)
+      viewport.removeEventListener("scroll", updateViewportOffset)
+      window.removeEventListener("orientationchange", updateViewportOffset)
+      document.documentElement.style.removeProperty(
+        "--visual-viewport-bottom-offset",
+      )
+    }
+  }, [])
 
   return (
     <nav
