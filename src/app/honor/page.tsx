@@ -137,7 +137,7 @@ export default function HonorWallPage() {
     <>
       <Header title="Honor Wall" />
 
-      <main id="main" className="min-h-screen pb-28 surface-1">
+      <main id="main" className="min-h-screen pb-bottom-nav surface-1">
         <HonorHero totals={totals} isLoading={isLoading} />
 
         <div className="px-5 md:px-8 max-w-2xl mx-auto pt-4">

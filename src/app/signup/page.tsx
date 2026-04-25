@@ -128,7 +128,7 @@ export default function SignupPage() {
   }
 
   return (
-    <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+    <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
       <div className="max-w-3xl mx-auto py-8">
         {/* Header */}
         <div className="text-center mb-8">

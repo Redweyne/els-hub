@@ -89,7 +89,7 @@ export default function RequestsPage() {
 
   if (isLoading) {
     return (
-      <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
         <div className="py-8">
           <p className="text-bone/50 text-sm">Loading requests...</p>
         </div>
@@ -98,7 +98,7 @@ export default function RequestsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+    <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
       <div className="max-w-4xl mx-auto py-8">
         <div className="mb-8">
           <h1 className="font-display text-2xl font-bold text-bone tracking-[0.2em] mb-2">

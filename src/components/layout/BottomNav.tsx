@@ -32,14 +32,11 @@ export function BottomNav() {
 
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-40 bg-ink/85 backdrop-blur-xl border-t border-ember/20"
+      className="app-bottom-nav"
       aria-label="Primary"
     >
       <div className="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-ember/60 to-transparent" />
-      <div
-        className="flex items-stretch justify-around px-1"
-        style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 6px)" }}
-      >
+      <div className="relative z-10 flex h-[var(--bottom-nav-core)] items-stretch justify-around px-1">
         {tabs.map((tab) => {
           const Icon = tab.icon
           const isActive =

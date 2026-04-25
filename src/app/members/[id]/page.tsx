@@ -166,7 +166,7 @@ export default function MemberProfilePage() {
     return (
       <>
         <Header title="Member" />
-        <main className="min-h-screen pt-24 pb-28 px-5">
+        <main className="min-h-screen pt-24 pb-bottom-nav px-5">
           <NetworkError
             onRetry={loadMember}
             message={error || "Member not found."}
@@ -207,7 +207,7 @@ export default function MemberProfilePage() {
 
       <main
         id="main"
-        className="min-h-screen pb-28 surface-1"
+        className="min-h-screen pb-bottom-nav surface-1"
       >
         <section
           className={cn(
@@ -641,7 +641,7 @@ function ProfileSkeleton() {
   return (
     <>
       <Header title="Member" />
-      <main className="min-h-screen pt-20 pb-28 px-5 md:px-8 max-w-xl mx-auto space-y-6">
+      <main className="min-h-screen pt-20 pb-bottom-nav px-5 md:px-8 max-w-xl mx-auto space-y-6">
         <div className="flex flex-col items-center text-center mt-8">
           <Shimmer className="w-24 h-24 md:w-28 md:h-28 rounded-full" />
           <Shimmer className="h-3 w-28 mt-6 rounded" />

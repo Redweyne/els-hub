@@ -241,7 +241,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main id="main" className="min-h-screen pb-28">
+      <main id="main" className="min-h-screen pb-bottom-nav">
         {error ? (
           <div className="pt-24">
             <NetworkError

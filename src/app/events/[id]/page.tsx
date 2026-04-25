@@ -154,7 +154,7 @@ export default function EventPage() {
     return (
       <>
         <Header title="Event" />
-        <main className="min-h-screen bg-ink flex items-center justify-center pt-16 pb-28">
+        <main className="min-h-screen bg-ink flex items-center justify-center pt-16 pb-bottom-nav">
           <div className="flex flex-col items-center gap-4">
             <motion.div
               className="w-12 h-12 rounded-full border-2 border-ember border-t-transparent"
@@ -173,7 +173,7 @@ export default function EventPage() {
     return (
       <>
         <Header title="Event" />
-        <main className="min-h-screen bg-ink pt-32 pb-28 px-4">
+        <main className="min-h-screen bg-ink pt-32 pb-bottom-nav px-4">
           <div className="max-w-2xl mx-auto py-8">
             <p className="text-bone/60 text-sm">{error || "No scores found for this event."}</p>
           </div>
@@ -211,7 +211,7 @@ export default function EventPage() {
   return (
     <>
       <Header title={eventTitle || "Event"} />
-      <main className="min-h-screen bg-ink pt-16 pb-28">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav">
 
         {/* ── HERO ─────────────────────────────────── */}
       <div className="relative overflow-hidden">

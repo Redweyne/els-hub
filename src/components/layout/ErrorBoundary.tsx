@@ -36,7 +36,7 @@ export class ErrorBoundary extends React.Component<
     if (this.state.hasError) {
       return (
         this.props.fallback || (
-          <div className="min-h-screen bg-ink pt-20 pb-28 px-4 flex items-center justify-center">
+          <div className="min-h-screen bg-ink pt-20 pb-bottom-nav px-4 flex items-center justify-center">
             <div className="max-w-md w-full">
               <Card className="bg-smoke/70 border-blood/40">
                 <CardContent className="p-6 text-center space-y-4">

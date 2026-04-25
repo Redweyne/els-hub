@@ -113,7 +113,7 @@ export default function EventsPage() {
     <>
       <Header title="Archive" />
 
-      <main id="main" className="min-h-screen pb-28 surface-1">
+      <main id="main" className="min-h-screen pb-bottom-nav surface-1">
         <section className="relative overflow-hidden pt-20 pb-6 md:pb-10 surface-2 film-grain-drift">
           <div
             className="aurora-orb-ember pointer-events-none"

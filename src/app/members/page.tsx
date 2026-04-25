@@ -131,7 +131,7 @@ export default function MembersPage() {
 
       <main
         id="main"
-        className="min-h-screen pb-28 surface-1"
+        className="min-h-screen pb-bottom-nav surface-1"
       >
         <div className="fixed top-16 left-0 right-0 z-30 bg-ink/90 backdrop-blur-xl border-b border-ash/70">
           <div className="px-5 md:px-8 pt-3 pb-3 space-y-3">

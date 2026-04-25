@@ -7,7 +7,7 @@ import { Clock, ChevronRight } from "lucide-react"
 
 export default function DashboardHome() {
   return (
-    <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+    <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
       {/* Faction Hero — Full width, single column */}
       <section className="py-8 space-y-4">
         <div className="flex items-center gap-3 mb-6">

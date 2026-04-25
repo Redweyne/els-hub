@@ -253,14 +253,14 @@ export default function UploadFCUPage() {
 
   if (isCheckingAuth) {
     return (
-      <main className="min-h-screen bg-ink pt-16 pb-28 px-4 flex items-center justify-center">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4 flex items-center justify-center">
         <div className="text-bone text-sm">Loading...</div>
       </main>
     )
   }
 
   return (
-    <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+    <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
       <div className="max-w-2xl mx-auto py-8">
         <div className="mb-8">
           <h1 className="font-display text-2xl font-bold text-bone tracking-[0.2em] mb-2">

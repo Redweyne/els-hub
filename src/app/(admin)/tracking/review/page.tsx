@@ -132,7 +132,7 @@ function ReviewQueueContent() {
 
   if (isLoading) {
     return (
-      <main className="min-h-screen bg-ink pt-16 pb-28 px-4 flex items-center justify-center">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4 flex items-center justify-center">
         <div className="text-bone text-sm">Loading review queue...</div>
       </main>
     )
@@ -140,7 +140,7 @@ function ReviewQueueContent() {
 
   if (items.length === 0) {
     return (
-      <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
         <div className="max-w-2xl mx-auto py-8">
           <h1 className="font-display text-2xl font-bold text-bone tracking-[0.2em] mb-4">
             Review Complete
@@ -161,7 +161,7 @@ function ReviewQueueContent() {
   const progress = `${currentIndex + 1} / ${items.length}`
 
   return (
-    <main className="min-h-screen bg-ink pt-16 pb-28 px-4">
+    <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4">
       <div className="max-w-2xl mx-auto py-8">
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
@@ -255,7 +255,7 @@ export default function ReviewQueuePage() {
 
 function ReviewQueueLoadingPage() {
   return (
-    <main className="min-h-screen bg-ink pt-16 pb-28 px-4 flex items-center justify-center">
+    <main className="min-h-screen bg-ink pt-16 pb-bottom-nav px-4 flex items-center justify-center">
       <motion.div
         className="w-12 h-12 rounded-full border-2 border-ember border-t-transparent"
         animate={{ rotate: 360 }}

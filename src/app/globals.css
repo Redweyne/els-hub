@@ -51,6 +51,12 @@
   --dur-fast: 180ms;
   --dur-med: 420ms;
   --dur-slow: 720ms;
+
+  /* --- Mobile chrome / safe-area sizing --- */
+  --bottom-nav-core: 64px;
+  --bottom-nav-safe: max(env(safe-area-inset-bottom, 0px), 10px);
+  --bottom-nav-total: calc(var(--bottom-nav-core) + var(--bottom-nav-safe));
+  --bottom-nav-page-gap: 24px;
 }
 
 /* ==========================================================================
@@ -120,6 +126,7 @@ body {
   text-size-adjust: 100%;
   -webkit-text-size-adjust: 100%;
   overscroll-behavior-y: none;
+  background: var(--ink);
 }
 
 button,
@@ -379,6 +386,53 @@ h3 {
 
 @utility pulse-ring-once {
   animation: pulse-ring 1s ease-out 1;
+}
+
+/* ==========================================================================
+   Mobile bottom navigation
+   The dock is intentionally opaque and extends below the viewport. On iOS
+   Safari/Chrome, browser controls collapse and expand while scrolling; the
+   extension prevents any page content from showing under the app nav.
+   ========================================================================== */
+
+@utility app-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  height: var(--bottom-nav-total);
+  padding-bottom: var(--bottom-nav-safe);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--ink-100) 96%, transparent) 0%,
+      var(--ink) 62%
+    );
+  border-top: 1px solid color-mix(in oklab, var(--ember) 22%, transparent);
+  box-shadow:
+    0 -18px 36px rgba(0, 0, 0, 0.46),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  contain: layout paint style;
+}
+
+@utility app-bottom-nav {
+  &::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -96px;
+    height: 96px;
+    background: var(--ink);
+    pointer-events: none;
+  }
+}
+
+@utility pb-bottom-nav {
+  padding-bottom: calc(var(--bottom-nav-total) + var(--bottom-nav-page-gap));
 }
 
 /* ==========================================================================

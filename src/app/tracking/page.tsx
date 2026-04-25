@@ -59,7 +59,7 @@ export default function TrackingPage() {
     return (
       <>
         <Header title="Tracking" />
-        <main className="min-h-screen bg-ink pt-32 pb-28 flex items-center justify-center">
+        <main className="min-h-screen bg-ink pt-32 pb-bottom-nav flex items-center justify-center">
           <motion.div
             className="w-12 h-12 rounded-full border-2 border-ember border-t-transparent"
             animate={{ rotate: 360 }}
@@ -75,7 +75,7 @@ export default function TrackingPage() {
     return (
       <>
         <Header title="Tracking" />
-        <main className="min-h-screen bg-ink pt-32 pb-28 px-4">
+        <main className="min-h-screen bg-ink pt-32 pb-bottom-nav px-4">
           <div className="max-w-2xl mx-auto">
             <Card className="bg-smoke/60 border-ash">
               <CardContent className="p-8 text-center">
@@ -101,7 +101,7 @@ export default function TrackingPage() {
   return (
     <>
       <Header title="Tracking" />
-      <main className="min-h-screen bg-ink pt-16 pb-28">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav">
         <div className="px-4 max-w-2xl mx-auto py-8 space-y-4">
           <p className="text-xs text-bone/50 uppercase tracking-widest px-2 mb-6">
             Event Tracking

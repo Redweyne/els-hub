@@ -12,7 +12,7 @@ export default function SocialPage() {
   return (
     <>
       <Header title="Social" />
-      <main className="min-h-screen bg-ink pt-16 pb-28">
+      <main className="min-h-screen bg-ink pt-16 pb-bottom-nav">
         <div className="px-4 max-w-2xl mx-auto py-16 flex flex-col items-center justify-center text-center">
           <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
