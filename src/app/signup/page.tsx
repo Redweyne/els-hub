@@ -162,9 +162,9 @@ export default function SignupPage() {
               <Card className="bg-smoke/70 border-ash overflow-hidden">
                 <CardContent className="p-0">
                   <img
-                    src={appPath("/images/account-example.png")}
+                    src={appPath("/images/account-example-top.png")}
                     alt="Example account screenshot"
-                    className="w-full max-h-96 object-cover rounded-lg"
+                    className="w-full h-auto rounded-lg"
                   />
                 </CardContent>
               </Card>
