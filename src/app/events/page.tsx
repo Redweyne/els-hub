@@ -12,8 +12,6 @@ import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
 import {
   FactionCallUpGlyph,
-  GloryOfOakvaleGlyph,
-  GovernorsWarGlyph,
   ELSEmblemV2,
   OrnateDivider,
 } from "@/components/heraldry"
@@ -21,6 +19,7 @@ import { Eyebrow, DisplayHeading, Numeric } from "@/components/typography"
 import { Shimmer } from "@/components/motion/Shimmer"
 import { Section } from "@/components/motion/Section"
 import { NetworkError } from "@/components/ui/network-error"
+import { getEventConfig } from "@/lib/events/config"
 import { cn } from "@/lib/cn"
 
 interface EventRow {
@@ -32,17 +31,6 @@ interface EventRow {
   created_at: string
   status: string
   faction_result_json?: { placement?: number } | null
-}
-
-const EVENT_TYPE_META: Record<
-  string,
-  { label: string; Glyph: typeof FactionCallUpGlyph }
-> = {
-  fcu: { label: "Faction Call-Up", Glyph: FactionCallUpGlyph },
-  goa: { label: "Glory of Oakvale", Glyph: GloryOfOakvaleGlyph },
-  sgoa: { label: "Supreme Glory of Oakvale", Glyph: GloryOfOakvaleGlyph },
-  "gw-sl": { label: "Governor's War · SL", Glyph: GovernorsWarGlyph },
-  "gw-fh": { label: "Governor's War · FH", Glyph: GovernorsWarGlyph },
 }
 
 const MONTH_FORMAT = new Intl.DateTimeFormat("en-US", {
@@ -246,10 +234,8 @@ function TimelineItem({
   indexInMonth: number
 }) {
   const reducedMotion = useReducedMotion()
-  const meta = EVENT_TYPE_META[event.event_type_code ?? "fcu"] ?? {
-    label: "Event",
-    Glyph: FactionCallUpGlyph,
-  }
+  const cfg = getEventConfig(event.event_type_code) ?? getEventConfig("fcu")!
+  const meta = { label: cfg.label, Glyph: cfg.Glyph }
   const Glyph = meta.Glyph
   const placement = event.faction_result_json?.placement
 

@@ -8,6 +8,17 @@ import {
   shouldSaveAlias,
   uniqueNameKey,
 } from "@/lib/match/fuzzy"
+import {
+  isEventTypeCode,
+  type EventTypeCode,
+  type GWDailyMeta,
+  type OakReportCard,
+} from "@/lib/events/config"
+import {
+  getOcrPrompt,
+  sanitizeOcrJson,
+  type OcrPayload,
+} from "@/lib/events/ocr-prompts"
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
@@ -33,10 +44,19 @@ export async function POST(req: NextRequest) {
 
         const formData = await req.formData()
         const screenshotFiles = formData.getAll("screenshots") as File[]
-        const eventType = formData.get("event_type") as string
+        const rawEventType = (formData.get("event_type") as string | null) ?? "fcu"
         const eventTitle = formData.get("event_title") as string
         const factionId = formData.get("faction_id") as string
         const existingEventId = formData.get("event_id") as string | null
+
+        // GW Daily-only fields (officer-confirmed in the upload form)
+        const gwCampaignId = formData.get("gw_campaign_id") as string | null
+        const gwCycle = formData.get("gw_cycle") as string | null
+        const gwSuperCycle = formData.get("gw_super_cycle") as string | null
+        const gwDayInCycle = formData.get("gw_day_in_cycle") as string | null
+        const gwDayType = formData.get("gw_day_type") as string | null
+        const gwMinPoints = formData.get("gw_min_points") as string | null
+        const gwDeadlineIso = formData.get("gw_deadline_iso") as string | null
 
         if (!screenshotFiles || screenshotFiles.length === 0) {
           sendProgress(encoder, controller, { type: "error", message: "No screenshots provided" })
@@ -52,10 +72,43 @@ export async function POST(req: NextRequest) {
           return
         }
 
-        if (!existingEventId && (!eventType || !eventTitle)) {
+        if (!existingEventId && (!rawEventType || !eventTitle)) {
           sendProgress(encoder, controller, { type: "error", message: "Missing event_type or event_title" })
           controller.close()
           return
+        }
+
+        // Validate event_type. Anything unknown is a hard error — we can't pick a prompt.
+        if (!isEventTypeCode(rawEventType) || rawEventType === "gw_campaign") {
+          sendProgress(encoder, controller, {
+            type: "error",
+            message: `Invalid event_type: ${rawEventType}. Expected one of fcu, oak, gw_daily.`,
+          })
+          controller.close()
+          return
+        }
+        const eventType: EventTypeCode = rawEventType
+
+        // For GW Daily, the campaign + day-type metadata is required.
+        let gwDailyMeta: GWDailyMeta | null = null
+        if (eventType === "gw_daily" && !existingEventId) {
+          if (!gwCampaignId || !gwCycle || !gwDayInCycle || !gwDayType || !gwMinPoints || !gwDeadlineIso) {
+            sendProgress(encoder, controller, {
+              type: "error",
+              message: "GW Daily requires campaign + day-type metadata.",
+            })
+            controller.close()
+            return
+          }
+          gwDailyMeta = {
+            campaign_id: gwCampaignId,
+            cycle: gwCycle as GWDailyMeta["cycle"],
+            super_cycle: Number(gwSuperCycle) || 1,
+            day_in_cycle: Number(gwDayInCycle) as GWDailyMeta["day_in_cycle"],
+            day_type: gwDayType as GWDailyMeta["day_type"],
+            min_points: Number(gwMinPoints),
+            deadline_iso: gwDeadlineIso,
+          }
         }
 
         sendProgress(encoder, controller, { type: "start", totalFiles: screenshotFiles.length })
@@ -124,14 +177,22 @@ export async function POST(req: NextRequest) {
           sendProgress(encoder, controller, { type: "event_reused", eventId })
         } else {
           // Create new event record
+          const newEventRow: Record<string, unknown> = {
+            faction_id: factionId,
+            event_type_code: eventType,
+            title: eventTitle,
+            status: "processing",
+          }
+          if (gwDailyMeta) {
+            // Stash the campaign + day-type metadata so the entire app can derive
+            // schedule, threshold, and progress from this single source.
+            newEventRow.meta_json = gwDailyMeta
+            newEventRow.starts_at = new Date().toISOString()
+            newEventRow.ends_at = gwDailyMeta.deadline_iso
+          }
           const { data: eventData, error: eventError } = await adminClient
             .from("events")
-            .insert({
-              faction_id: factionId,
-              event_type_code: eventType,
-              title: eventTitle,
-              status: "processing",
-            })
+            .insert(newEventRow)
             .select("id")
             .single()
 
@@ -174,6 +235,15 @@ export async function POST(req: NextRequest) {
         const reviewQueueItems: any[] = []
         const autoAliasRows: Array<{ member_id: string; alias: string; source: string; confidence: number }> = []
         const seenRowKeys = new Set<string>()
+        // Oak: header data is harvested across multiple screenshots; whichever shot
+        // shows the "Glory of Oakvale Faction Results" card supplies it.
+        let oakHeaderAccumulator: OakReportCard | null = null
+
+        // gw_campaign was already rejected at validation; this is always one of
+        // the OCR-uploadable types (fcu | oak | gw_daily).
+        const ocrPrompt =
+          getOcrPrompt(eventType) +
+          `\n\nThe active ELS roster (use these exact spellings when a name clearly matches): ${rosterHint}`
 
         // Process each screenshot with Gemini
         for (let i = 0; i < screenshotFiles.length; i++) {
@@ -208,25 +278,7 @@ export async function POST(req: NextRequest) {
                     {
                       parts: [
                         {
-                          text: `CRITICAL: Return ONLY a valid JSON array. Do not include any markdown, code blocks, explanations, or extra text. Return the JSON array as-is, nothing else.
-
-Extract the Faction Call-Up ranking table from this screenshot. For each row, provide:
-- rank: the ranking number (integer)
-- player_name: complete player name with faction tag if visible (e.g. "[ELS] Boss1052") - preserve ALL characters exactly as shown
-- points: points value (integer)
-- accept_current: current accepts (integer)
-- accept_max: max accepts (integer)
-
-The active ELS roster is:
-${rosterHint}
-
-When a visible name clearly corresponds to a roster name, use that exact roster spelling in player_name. This matters for special characters such as ༄, ღ, 目, 폭, 無, ₩, accents, and styled letters.
-
-RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
-[
-  {"rank": 1, "player_name": "[ELS] Boss1052", "points": 3760, "accept_current": 11, "accept_max": 11},
-  {"rank": 2, "player_name": "[ELS] Atilla I", "points": 3625, "accept_current": 11, "accept_max": 11}
-]`,
+                          text: ocrPrompt,
                         },
                         {
                           inline_data: {
@@ -276,55 +328,80 @@ RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
           }
 
           const geminiData = await geminiResponse.json()
-          let responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "[]"
+          const responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}"
+          const cleaned = sanitizeOcrJson(responseText)
 
-          // Clean up response: remove markdown code blocks, trim whitespace
-          responseText = responseText
-            .replace(/^```(?:json)?\n?/g, '')
-            .replace(/\n?```$/g, '')
-            .trim()
-
-          // If response has text before/after JSON, try to extract just the JSON array
-          const jsonMatch = responseText.match(/\[[\s\S]*\]/)
-          if (jsonMatch) {
-            responseText = jsonMatch[0]
-          }
-
-          let rows: any[] = []
+          let payload: OcrPayload | null = null
           try {
-            // Replace problematic escape sequences with Unicode escapes
-            responseText = responseText
-              .replace(/\\u(?![0-9a-fA-F]{4})/g, '\\\\u')
-              .replace(/([^\\])\\(?!["\\/bfnrtu])/g, '$1\\\\')
-
-            rows = JSON.parse(responseText)
-
-            // Normalize numeric fields to ensure they're numbers, not strings
-            rows = rows.map((row: any) => ({
-              rank: Number(row.rank),
-              player_name: String(row.player_name),
-              points: Number(row.points),
-              accept_current: Number(row.accept_current),
-              accept_max: Number(row.accept_max),
-            }))
-
-            console.log(`[FCU-OCR] Screenshot ${i + 1} extracted ${rows.length} rows`)
+            const sanitized = cleaned
+              .replace(/\\u(?![0-9a-fA-F]{4})/g, "\\\\u")
+              .replace(/([^\\])\\(?!["\\/bfnrtu])/g, "$1\\\\")
+            payload = JSON.parse(sanitized) as OcrPayload
           } catch (err) {
-            console.error(`[FCU-OCR] Parse error on screenshot ${i + 1}`)
-            console.error(`[FCU-OCR] Raw response text length:`, responseText.length)
-            console.error(`[FCU-OCR] Parse error detail:`, err instanceof Error ? err.message : String(err))
-
-            // Fallback: try parsing with more aggressive sanitization
+            console.error(`[FCU-OCR] Parse error on screenshot ${i + 1}`, err)
             try {
-              const sanitized = responseText.replace(/\\[^"\\/bfnrtu]/g, '')
-              rows = JSON.parse(sanitized)
-              console.log(`[FCU-OCR] Fallback parse succeeded for screenshot ${i + 1}: ${rows.length} rows`)
+              const fallback = cleaned.replace(/\\[^"\\/bfnrtu]/g, "")
+              payload = JSON.parse(fallback) as OcrPayload
             } catch (fallbackErr) {
-              sendProgress(encoder, controller, { type: "error", message: `Failed to parse screenshot ${i + 1}` })
+              console.error(`[FCU-OCR] Fallback parse error:`, fallbackErr)
+              sendProgress(encoder, controller, {
+                type: "error",
+                message: `Failed to parse screenshot ${i + 1}`,
+              })
               controller.close()
               return
             }
           }
+
+          if (!payload || !Array.isArray(payload.rows)) {
+            payload = { kind: eventType as Exclude<EventTypeCode, "gw_campaign">, rows: [] } as OcrPayload
+          }
+
+          // For Oak: capture the report-card header. The same field appearing on
+          // multiple shots is fine — last write wins, but Gemini only emits header
+          // for screenshots that actually show the faction-results card.
+          if (eventType === "oak" && payload.kind === "oak" && payload.header) {
+            const h = payload.header
+            const merged: OakReportCard = {
+              placement: Number(h.placement) || oakHeaderAccumulator?.placement || 0,
+              class_points:
+                Number(h.class_points) || oakHeaderAccumulator?.class_points || 0,
+              class_points_delta:
+                Number(h.class_points_delta) || oakHeaderAccumulator?.class_points_delta || 0,
+              battle_stats: {
+                total: Number(h.battle_stats?.total) || oakHeaderAccumulator?.battle_stats.total || 0,
+                kill: Number(h.battle_stats?.kill) || oakHeaderAccumulator?.battle_stats.kill || 0,
+                occupation:
+                  Number(h.battle_stats?.occupation) || oakHeaderAccumulator?.battle_stats.occupation || 0,
+              },
+              best_of_all: {
+                total: h.best_of_all?.total
+                  ? { name: String(h.best_of_all.total.name), value: Number(h.best_of_all.total.value) }
+                  : oakHeaderAccumulator?.best_of_all.total || { name: "", value: 0 },
+                kill: h.best_of_all?.kill
+                  ? { name: String(h.best_of_all.kill.name), value: Number(h.best_of_all.kill.value) }
+                  : oakHeaderAccumulator?.best_of_all.kill || { name: "", value: 0 },
+                occupation: h.best_of_all?.occupation
+                  ? {
+                      name: String(h.best_of_all.occupation.name),
+                      value: Number(h.best_of_all.occupation.value),
+                    }
+                  : oakHeaderAccumulator?.best_of_all.occupation || { name: "", value: 0 },
+              },
+            }
+            oakHeaderAccumulator = merged
+          }
+
+          // Normalize the leaderboard rows. FCU has accept fields; Oak/GW Daily don't.
+          const rows = payload.rows.map((row: any) => ({
+            rank: Number(row.rank),
+            player_name: String(row.player_name ?? ""),
+            points: Number(row.points),
+            accept_current: row.accept_current != null ? Number(row.accept_current) : null,
+            accept_max: row.accept_max != null ? Number(row.accept_max) : null,
+          }))
+
+          console.log(`[FCU-OCR] Screenshot ${i + 1} extracted ${rows.length} rows (kind=${eventType})`)
 
           // Store screenshot + ocr result
           const { data: screenshotData, error: screenshotError } = await adminClient
@@ -426,10 +503,16 @@ RESPONSE FORMAT - RETURN ONLY THIS, NO EXTRA TEXT:
           }
         }
 
-        // Update event status
+        // For Oak: persist the report-card header (placement, battle stats,
+        // best-of-all heroes) into faction_result_json. The Oak event detail
+        // page reads from this column and renders the full report card.
+        const publishUpdate: Record<string, unknown> = { status: "published" }
+        if (eventType === "oak" && oakHeaderAccumulator) {
+          publishUpdate.faction_result_json = oakHeaderAccumulator
+        }
         await adminClient
           .from("events")
-          .update({ status: "published" })
+          .update(publishUpdate)
           .eq("id", eventId)
 
         console.log(`[FCU-OCR] Total rows extracted: ${allRows.length}, review queue: ${reviewQueueItems.length}`)

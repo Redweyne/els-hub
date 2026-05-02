@@ -1,7 +1,7 @@
 "use client"
 
 import { motion, useReducedMotion } from "framer-motion"
-import { Award, Trophy, Crown, Flame, Gem, TrendingUp } from "lucide-react"
+import { Award, Trophy, Crown, Flame, Gem, ShieldCheck, Sword, TrendingUp } from "lucide-react"
 import { useState } from "react"
 
 import type { Achievement } from "@/lib/achievements"
@@ -18,6 +18,15 @@ const ACHIEVEMENT_ICONS: Record<string, typeof Trophy> = {
   "first-place": Crown,
   legend: Trophy,
   frontline: Trophy,
+  "oak-holder": Crown,
+  "oak-podium": Trophy,
+  "oak-hero": Award,
+  "oak-named": Award,
+  "robber-baron": Crown,
+  robber: Sword,
+  "iron-will": ShieldCheck,
+  "war-veteran": Sword,
+  soldier: Sword,
 }
 
 export interface AchievementBadgesProps {

@@ -3,6 +3,9 @@
 import Link from "next/link"
 import { motion, useReducedMotion } from "framer-motion"
 import { Numeric } from "@/components/typography"
+import { MemberAvatar } from "./MemberAvatar"
+import { useLongPressPeek } from "./MemberPeek"
+import { SparkLine, DeltaArrow } from "@/components/dataviz"
 import { cn } from "@/lib/cn"
 
 export type RankTier =
@@ -27,6 +30,21 @@ export interface MemberCardEliteProps {
   influence?: number | null
   vipLevel?: number | null
   titles?: string[]
+  /**
+   * Last N event ranks (oldest → newest). Renders an inline sparkline
+   * to the right of the influence value. Omit if no event history.
+   */
+  recentRanks?: ReadonlyArray<number | null>
+  /**
+   * Most recent rank delta (latest event compared to prior of same type).
+   * Positive number = rank improved (lower number).
+   */
+  rankDelta?: number | null
+  /**
+   * Member has scored in the last 7 days — drives the avatar's
+   * presence pulse.
+   */
+  active?: boolean
   delay?: number
   className?: string
 }
@@ -34,57 +52,36 @@ export interface MemberCardEliteProps {
 const TIER_CONFIG: Record<
   string,
   {
-    ring: string
-    avatarBg: string
     roleLabel: string
     roleText: string
-    abbr: string
+    sparkColor: string
   }
 > = {
   mastermind: {
-    ring: "ring-ember shadow-[0_0_18px_-4px_color-mix(in_oklab,var(--ember)_70%,transparent)]",
-    avatarBg:
-      "bg-gradient-to-br from-ember-light via-ember to-ember-dark text-ink",
     roleLabel: "Mastermind",
     roleText: "text-ember",
-    abbr: "V",
+    sparkColor: "var(--ember)",
   },
   leaders: {
-    ring: "ring-blood/60",
-    avatarBg:
-      "bg-gradient-to-br from-blood-light via-blood to-blood-dark text-bone",
     roleLabel: "Leader",
     roleText: "text-blood",
-    abbr: "IV",
+    sparkColor: "var(--blood-light)",
   },
   frontliner: {
-    ring: "ring-bone/30",
-    avatarBg: "bg-gradient-to-br from-smoke to-ink-100 text-bone",
     roleLabel: "Frontliner",
     roleText: "text-bone/70",
-    abbr: "III",
+    sparkColor: "var(--bone-dim)",
   },
   production: {
-    ring: "ring-ash",
-    avatarBg: "bg-gradient-to-br from-ink-100 to-ink text-bone/70",
     roleLabel: "Production",
     roleText: "text-bone/50",
-    abbr: "II",
+    sparkColor: "var(--bone-dim)",
   },
   stranger: {
-    ring: "ring-ash/50",
-    avatarBg: "bg-gradient-to-br from-ink-100 to-ink text-bone/50",
     roleLabel: "Stranger",
     roleText: "text-bone/45",
-    abbr: "I",
+    sparkColor: "var(--bone-dim)",
   },
-}
-
-const FAMILY_EMOJI: Record<string, string> = {
-  advisor: "🛡",
-  general: "⚔",
-  diplomat: "✢",
-  coordinator: "❖",
 }
 
 export function MemberCardElite({
@@ -94,12 +91,18 @@ export function MemberCardElite({
   familyRole,
   influence,
   vipLevel,
+  recentRanks,
+  rankDelta,
+  active = false,
   delay = 0,
   className,
 }: MemberCardEliteProps) {
   const reducedMotion = useReducedMotion()
   const cfg = TIER_CONFIG[tier] ?? TIER_CONFIG.frontliner
-  const initial = name.trim()[0]?.toUpperCase() ?? "?"
+  const hasSparkData =
+    !!recentRanks && recentRanks.filter((r) => r != null).length >= 2
+  const sparkColor = cfg.sparkColor
+  const peekHandlers = useLongPressPeek(id, name, tier)
 
   return (
     <motion.div
@@ -122,37 +125,39 @@ export function MemberCardElite({
           "transition-all duration-300 active:scale-[0.98]",
           "hover:border-ember/40 hover:shadow-[0_0_24px_-12px_color-mix(in_oklab,var(--ember)_60%,transparent)]",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+          "select-none touch-manipulation",
         )}
+        style={{ viewTransitionName: `member-${id}` }}
+        {...peekHandlers}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <div
-            className={cn(
-              "relative flex-shrink-0 w-11 h-11 md:w-12 md:h-12 rounded-full flex items-center justify-center",
-              "font-display font-bold text-base md:text-lg select-none",
-              "ring-2 ring-offset-2 ring-offset-ink",
-              cfg.avatarBg,
-              cfg.ring,
-            )}
-          >
-            <span>{initial}</span>
-            {familyRole && FAMILY_EMOJI[familyRole as string] && (
-              <span
-                className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-ink border border-ember/60 flex items-center justify-center text-[10px] leading-none"
-                title={familyRole as string}
-                aria-label={`Family role: ${familyRole}`}
-              >
-                {FAMILY_EMOJI[familyRole as string]}
-              </span>
-            )}
-          </div>
+          <MemberAvatar
+            name={name}
+            tier={tier}
+            familyRole={familyRole as string | null | undefined}
+            size={40}
+            active={active}
+            idScope={`mc-${id}`}
+          />
 
           <div className="flex-1 min-w-0">
-            <p
-              className="font-semibold text-bone text-[14px] md:text-sm leading-tight truncate"
-              title={name}
-            >
-              {name}
-            </p>
+            <div className="flex items-center gap-1.5">
+              <p
+                className="font-semibold text-bone text-[14px] md:text-sm leading-tight truncate"
+                title={name}
+              >
+                {name}
+              </p>
+              {rankDelta != null && rankDelta !== 0 && (
+                <DeltaArrow
+                  delta={rankDelta}
+                  inverted
+                  showValue
+                  size={10}
+                  className="flex-shrink-0"
+                />
+              )}
+            </div>
             <div className="mt-0.5 flex items-center gap-1.5 text-[10px] md:text-[11px]">
               <span
                 className={cn(
@@ -173,22 +178,37 @@ export function MemberCardElite({
             </div>
           </div>
 
-          <div className="flex-shrink-0 text-right">
-            {influence != null && influence > 0 ? (
-              <Numeric
-                value={influence}
-                format="compact"
-                precision={1}
-                className="text-ember text-[13px] md:text-sm font-bold tabular-nums"
+          <div className="flex-shrink-0 flex items-center gap-2.5">
+            {hasSparkData && (
+              <SparkLine
+                data={recentRanks!}
+                width={48}
+                height={18}
+                color={sparkColor}
+                inverted
+                showLastDot
+                fill
+                label={`${name} recent ranks`}
+                className="opacity-90"
               />
-            ) : (
-              <span className="text-bone/30 text-xs font-body">—</span>
             )}
-            {vipLevel != null && vipLevel > 0 && (
-              <p className="text-[9px] mt-0.5 text-bone/45 uppercase tracking-wider font-body">
-                VIP {vipLevel}
-              </p>
-            )}
+            <div className="text-right min-w-[3.5rem]">
+              {influence != null && influence > 0 ? (
+                <Numeric
+                  value={influence}
+                  format="compact"
+                  precision={1}
+                  className="text-ember text-[13px] md:text-sm font-bold tabular-nums"
+                />
+              ) : (
+                <span className="text-bone/30 text-xs font-body">—</span>
+              )}
+              {vipLevel != null && vipLevel > 0 && (
+                <p className="text-[9px] mt-0.5 text-bone/45 uppercase tracking-wider font-body">
+                  VIP {vipLevel}
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </Link>

@@ -11,7 +11,7 @@ import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Upload, Lock } from "lucide-react"
+import { Upload, Lock, Sword } from "lucide-react"
 
 export default function TrackingPage() {
   const router = useRouter()
@@ -114,15 +114,17 @@ export default function TrackingPage() {
           >
             <Link href="/tracking/new">
               <Card className="bg-gradient-to-br from-ember/15 to-blood/10 border-ember/40 hover:border-ember/60 transition-all cursor-pointer">
-                <CardContent className="p-6 flex items-center gap-4">
+                <CardContent className="p-6 flex items-center gap-4 min-h-[80px]">
                   <div className="w-12 h-12 rounded-lg bg-ember/20 flex items-center justify-center flex-shrink-0">
-                    <Upload size={24} className="text-ember" />
+                    <Upload size={22} className="text-ember" />
                   </div>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <p className="font-semibold text-bone mb-1">Upload Event</p>
-                    <p className="text-sm text-bone/60">Create or update Faction Call-Up events with screenshots</p>
+                    <p className="text-sm text-bone/60">
+                      Drop FCU, Oak, or GW Daily screenshots — OCR handles the rest
+                    </p>
                   </div>
-                  <div className="text-ember text-xl">→</div>
+                  <div className="text-ember text-xl flex-shrink-0">→</div>
                 </CardContent>
               </Card>
             </Link>
@@ -133,17 +135,40 @@ export default function TrackingPage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}
           >
+            <Link href="/tracking/campaigns/new">
+              <Card className="bg-gradient-to-br from-blood/15 to-blood-dark/10 border-blood/40 hover:border-blood/60 transition-all cursor-pointer">
+                <CardContent className="p-6 flex items-center gap-4 min-h-[80px]">
+                  <div className="w-12 h-12 rounded-lg bg-blood/20 flex items-center justify-center flex-shrink-0">
+                    <Sword size={22} className="text-blood-light" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-bone mb-1">Start GW Campaign</p>
+                    <p className="text-sm text-bone/60">
+                      Anchor a 50-day Governor&apos;s War with auto-rotating dailies
+                    </p>
+                  </div>
+                  <div className="text-blood-light text-xl flex-shrink-0">→</div>
+                </CardContent>
+              </Card>
+            </Link>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
             <Link href="/tracking/review">
               <Card className="bg-gradient-to-br from-bone/10 to-ash/10 border-ash hover:border-bone/30 transition-all cursor-pointer">
-                <CardContent className="p-6 flex items-center gap-4">
+                <CardContent className="p-6 flex items-center gap-4 min-h-[80px]">
                   <div className="w-12 h-12 rounded-lg bg-bone/10 flex items-center justify-center flex-shrink-0">
                     <span className="text-lg font-bold text-bone">✓</span>
                   </div>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <p className="font-semibold text-bone mb-1">Review Queue</p>
                     <p className="text-sm text-bone/60">Resolve ambiguous member name matches</p>
                   </div>
-                  <div className="text-bone/50 text-xl">→</div>
+                  <div className="text-bone/50 text-xl flex-shrink-0">→</div>
                 </CardContent>
               </Card>
             </Link>

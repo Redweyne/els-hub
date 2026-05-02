@@ -4,12 +4,27 @@
  * of unlocked achievement keys with metadata.
  */
 
+import { getEventConfig, type EventTypeCode } from "@/lib/events/config"
+
 export interface ScoreInput {
   eventId: string
   rank: number
   points: number
   createdAt: string
   eventTypeCode?: string | null
+  /** GW Daily metadata if applicable — used to compute streaks. */
+  gwMeta?: {
+    campaign_id: string
+    cycle: "war" | "hegemony"
+    super_cycle: number
+    day_in_cycle: 1 | 2 | 3 | 4 | 5
+    day_type: "robbing" | "kingpin" | "influence" | "speedups" | "massacre"
+    min_points: number
+  } | null
+  /** For Oak: faction placement (1-5). */
+  oakPlacement?: number | null
+  /** For Oak: this member's name in best_of_all categories. */
+  oakBestOf?: Array<"total" | "kill" | "occupation"> | null
 }
 
 export interface Achievement {
@@ -150,12 +165,134 @@ export function deriveAchievements(
     })
   }
 
+  // ── Oak achievements ──────────────────────────────────────────────────
+  const oakScores = scores.filter((s) => normalizeCode(s.eventTypeCode) === "oak")
+  if (oakScores.length > 0) {
+    const oakWins = oakScores.filter((s) => s.oakPlacement === 1).length
+    if (oakWins >= 3) {
+      out.push({
+        key: "oak-holder",
+        label: "Oak Holder",
+        description: `${oakWins} Oakvale victories`,
+        tier: "gold",
+        progress: { current: oakWins, target: oakWins },
+      })
+    } else if (oakWins >= 1) {
+      out.push({
+        key: "oak-podium",
+        label: "Oak Champion",
+        description: `${oakWins} Oakvale victor${oakWins === 1 ? "y" : "ies"}`,
+        tier: "silver",
+        progress: { current: oakWins, target: 3 },
+      })
+    }
+    const heroAppearances = oakScores.reduce(
+      (sum, s) => sum + (s.oakBestOf?.length ?? 0),
+      0,
+    )
+    if (heroAppearances >= 3) {
+      out.push({
+        key: "oak-hero",
+        label: "Oak Hero",
+        description: `Named in ${heroAppearances} "Best of All" entries`,
+        tier: "gold",
+      })
+    } else if (heroAppearances >= 1) {
+      out.push({
+        key: "oak-named",
+        label: "Oak Named",
+        description: `Named in ${heroAppearances} "Best of All" entr${heroAppearances === 1 ? "y" : "ies"}`,
+        tier: "ember",
+        progress: { current: heroAppearances, target: 3 },
+      })
+    }
+  }
+
+  // ── GW achievements ───────────────────────────────────────────────────
+  const gwScores = scores.filter(
+    (s) => normalizeCode(s.eventTypeCode) === "gw_daily" && s.gwMeta,
+  )
+  if (gwScores.length > 0) {
+    const robbingHits = gwScores.filter(
+      (s) => s.gwMeta?.day_type === "robbing" && s.points >= (s.gwMeta?.min_points ?? Infinity),
+    )
+    // "Robber Baron" — hit robbing across at least 3 super-cycles in any campaign.
+    const robberSuperCycles = new Set<string>()
+    for (const r of robbingHits) {
+      if (r.gwMeta) {
+        robberSuperCycles.add(`${r.gwMeta.campaign_id}:${r.gwMeta.super_cycle}`)
+      }
+    }
+    if (robberSuperCycles.size >= 3) {
+      out.push({
+        key: "robber-baron",
+        label: "Robber Baron",
+        description: `Robbing threshold cleared across ${robberSuperCycles.size} super-cycles`,
+        tier: "gold",
+      })
+    } else if (robberSuperCycles.size >= 1) {
+      out.push({
+        key: "robber",
+        label: "Robber",
+        description: `Robbing threshold cleared in ${robberSuperCycles.size} super-cycle${robberSuperCycles.size === 1 ? "" : "s"}`,
+        tier: "bronze",
+        progress: { current: robberSuperCycles.size, target: 3 },
+      })
+    }
+
+    // "Iron Will" — every threshold hit in a single campaign.
+    const byCampaign = new Map<string, ScoreInput[]>()
+    for (const s of gwScores) {
+      const cid = s.gwMeta?.campaign_id
+      if (!cid) continue
+      const list = byCampaign.get(cid) ?? []
+      list.push(s)
+      byCampaign.set(cid, list)
+    }
+    for (const [, campaignScores] of byCampaign) {
+      const allHit = campaignScores.every(
+        (s) => s.points >= (s.gwMeta?.min_points ?? Infinity),
+      )
+      if (campaignScores.length >= 10 && allHit) {
+        out.push({
+          key: "iron-will",
+          label: "Iron Will",
+          description: `Every threshold cleared across ${campaignScores.length} GW days`,
+          tier: "gold",
+        })
+        break
+      }
+    }
+
+    // "Soldier" — participated in 5+ GW dailies (any threshold).
+    if (gwScores.length >= 20) {
+      out.push({
+        key: "war-veteran",
+        label: "War Veteran",
+        description: `${gwScores.length} GW dailies recorded`,
+        tier: "silver",
+      })
+    } else if (gwScores.length >= 5) {
+      out.push({
+        key: "soldier",
+        label: "Soldier",
+        description: `${gwScores.length} GW dailies recorded`,
+        tier: "bronze",
+        progress: { current: gwScores.length, target: 20 },
+      })
+    }
+  }
+
   const seen = new Set<string>()
   return out.filter((a) => {
     if (seen.has(a.key)) return false
     seen.add(a.key)
     return true
   })
+}
+
+function normalizeCode(raw: string | null | undefined): EventTypeCode | null {
+  return getEventConfig(raw)?.code ?? null
 }
 
 function isFoundationMember(joinedAt?: string | null): boolean {

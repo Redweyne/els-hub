@@ -25,6 +25,17 @@ interface Member {
   is_active: boolean
 }
 
+interface MemberStats {
+  /** Last N event ranks, oldest → newest. Up to 6. */
+  recentRanks: number[]
+  /** Most recent delta vs prior event of same type. Negative = improved. */
+  rankDelta: number | null
+  /** True if any event_score in last 7 days. */
+  active: boolean
+}
+
+const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+
 const RANK_TIERS = [
   "mastermind",
   "leaders",
@@ -61,6 +72,7 @@ const TIER_PILL: Record<
 
 export default function MembersPage() {
   const [members, setMembers] = useState<Member[]>([])
+  const [memberStats, setMemberStats] = useState<Record<string, MemberStats>>({})
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedTier, setSelectedTier] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -75,15 +87,80 @@ export default function MembersPage() {
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       )
 
-      const { data, error: dbError } = await supabase
-        .from("members")
-        .select("*")
-        .eq("is_active", true)
-        .order("rank_tier", { ascending: true })
-        .order("influence", { ascending: false, nullsFirst: false })
+      // Fetch members + their last ~6 event_scores in parallel.
+      const [membersRes, scoresRes] = await Promise.all([
+        supabase
+          .from("members")
+          .select("*")
+          .eq("is_active", true)
+          .order("rank_tier", { ascending: true })
+          .order("influence", { ascending: false, nullsFirst: false }),
+        supabase
+          .from("event_scores")
+          .select(
+            "member_id, rank_value, created_at, events:event_id(event_type_code)",
+          )
+          .order("created_at", { ascending: false })
+          .limit(600),
+      ])
 
-      if (dbError) throw dbError
-      setMembers((data || []) as Member[])
+      if (membersRes.error) throw membersRes.error
+      const list = (membersRes.data || []) as Member[]
+      setMembers(list)
+
+      // Aggregate per-member stats client-side.
+      const stats: Record<string, MemberStats> = {}
+      const now = Date.now()
+      for (const m of list) {
+        stats[m.id] = { recentRanks: [], rankDelta: null, active: false }
+      }
+      const scoresByMember = new Map<
+        string,
+        Array<{ rank_value: number; created_at: string; type_code: string | null }>
+      >()
+      for (const raw of scoresRes.data ?? []) {
+        const s = raw as unknown as {
+          member_id: string
+          rank_value: number
+          created_at: string
+          events:
+            | { event_type_code: string | null }
+            | Array<{ event_type_code: string | null }>
+            | null
+        }
+        const ev = Array.isArray(s.events) ? s.events[0] : s.events
+        const typeCode = ev?.event_type_code ?? null
+        const list = scoresByMember.get(s.member_id) ?? []
+        list.push({
+          rank_value: s.rank_value,
+          created_at: s.created_at,
+          type_code: typeCode,
+        })
+        scoresByMember.set(s.member_id, list)
+      }
+      for (const [memberId, raw] of scoresByMember) {
+        // Already sorted newest-first from the query.
+        const newestSix = raw.slice(0, 6)
+        // Sparkline wants oldest → newest
+        const recentRanks = newestSix
+          .map((r) => r.rank_value)
+          .reverse()
+        // Recent delta vs prior event of the same type.
+        let rankDelta: number | null = null
+        if (newestSix.length > 0) {
+          const latest = newestSix[0]
+          const prior = newestSix.find(
+            (r, i) => i > 0 && r.type_code === latest.type_code,
+          )
+          if (prior) rankDelta = prior.rank_value - latest.rank_value
+        }
+        // Active in last 7 days?
+        const active = newestSix.some(
+          (r) => now - new Date(r.created_at).getTime() < ACTIVITY_WINDOW_MS,
+        )
+        stats[memberId] = { recentRanks, rankDelta, active }
+      }
+      setMemberStats(stats)
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Failed to load members"
@@ -266,7 +343,9 @@ export default function MembersPage() {
                         count={tierMembers.length}
                       />
                       <div className="space-y-2">
-                        {tierMembers.map((member, idx) => (
+                        {tierMembers.map((member, idx) => {
+                          const stats = memberStats[member.id]
+                          return (
                           <MemberCardElite
                             key={member.id}
                             id={member.id}
@@ -275,9 +354,13 @@ export default function MembersPage() {
                             familyRole={member.family_role}
                             influence={member.influence}
                             vipLevel={member.vip_level}
+                            recentRanks={stats?.recentRanks}
+                            rankDelta={stats?.rankDelta ?? null}
+                            active={stats?.active ?? false}
                             delay={Math.min(idx * 0.025, 0.3)}
                           />
-                        ))}
+                          )
+                        })}
                       </div>
                     </motion.section>
                   )

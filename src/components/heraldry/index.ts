@@ -29,3 +29,12 @@ export {
   GovernorsWarGlyph,
 } from "./glyphs/FactionCallUpGlyph"
 export type { GlyphProps } from "./glyphs/FactionCallUpGlyph"
+
+export {
+  RobbingGlyph,
+  KingpinGlyph,
+  InfluenceGlyph,
+  SpeedupsGlyph,
+  MassacreGlyph,
+  getDayTypeGlyph,
+} from "./glyphs/DayTypeGlyphs"

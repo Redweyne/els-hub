@@ -11,6 +11,7 @@ import { ELSEmblemV2, RankStarsRow } from "@/components/heraldry"
 import { Eyebrow, DisplayHeading, Numeric } from "@/components/typography"
 import { ParticleField } from "@/components/motion/ParticleField"
 import { Shimmer } from "@/components/motion/Shimmer"
+import { SparkLine, TrendArc } from "@/components/dataviz"
 import { cn } from "@/lib/cn"
 
 export interface CommandCenterHeroProps {
@@ -20,6 +21,23 @@ export interface CommandCenterHeroProps {
   server?: number
   factionClass?: string
   isLoading?: boolean
+  /**
+   * Recent member-count series (oldest → newest). Renders a sparkline
+   * beneath the Members tile.
+   */
+  memberCountSeries?: ReadonlyArray<number>
+  /** Recent influence series (oldest → newest). */
+  influenceSeries?: ReadonlyArray<number>
+  /** Recent faction placement series (lower is better). */
+  placementSeries?: ReadonlyArray<number>
+  /**
+   * "Pulse" series — values driving the breathing TrendArc behind the hero.
+   * Pass faction-wide event counts per day (last 14 days), or any signal
+   * that conveys "intensity". When omitted the arc is suppressed.
+   */
+  pulseSeries?: ReadonlyArray<number>
+  /** Override pulse color (defaults to ember). Pass blood-light for war-mode. */
+  pulseColor?: string
 }
 
 const EASE = [0.2, 0.8, 0.2, 1] as const
@@ -31,6 +49,11 @@ export function CommandCenterHero({
   server = 78,
   factionClass = "S",
   isLoading = false,
+  memberCountSeries,
+  influenceSeries,
+  placementSeries,
+  pulseSeries,
+  pulseColor = "var(--ember)",
 }: CommandCenterHeroProps) {
   const sectionRef = useRef<HTMLElement>(null)
   const reducedMotion = useReducedMotion()
@@ -70,6 +93,24 @@ export function CommandCenterHero({
           size={1.4}
           maxOpacity={0.45}
         />
+      )}
+
+      {/* Breathing pulse arc — sits beneath the hero content as ambient signal */}
+      {pulseSeries && pulseSeries.length >= 4 && (
+        <div
+          className="absolute inset-x-0 bottom-0 pointer-events-none opacity-50 md:opacity-65"
+          style={{ color: pulseColor }}
+          aria-hidden="true"
+        >
+          <TrendArc
+            data={pulseSeries}
+            width={1200}
+            height={92}
+            color={pulseColor}
+            breathe
+            className="w-full h-[68px] md:h-[92px]"
+          />
+        </div>
       )}
 
       <div className="relative z-10 w-full max-w-screen-xl mx-auto px-5 md:px-8 pt-20 pb-10 md:pt-24 md:pb-20">
@@ -155,6 +196,8 @@ export function CommandCenterHero({
                     className="text-ember"
                   />
                 }
+                series={memberCountSeries}
+                seriesColor="var(--ember)"
               />
               <StatCard
                 label="Influence"
@@ -167,12 +210,17 @@ export function CommandCenterHero({
                     className="text-ember"
                   />
                 }
+                series={influenceSeries}
+                seriesColor="var(--ember)"
               />
               <StatCard
                 label="Standing"
                 isLoading={isLoading}
                 valueClass="text-ember"
                 value={factionPlacement ?? "—"}
+                series={placementSeries}
+                seriesInverted
+                seriesColor="var(--ember-light)"
               />
             </motion.div>
           </div>
@@ -210,11 +258,24 @@ interface StatCardProps {
   value: ReactNode
   valueClass?: string
   isLoading?: boolean
+  series?: ReadonlyArray<number>
+  seriesColor?: string
+  /** Pass true if a smaller series value = "better" (e.g. faction placement). */
+  seriesInverted?: boolean
 }
 
-function StatCard({ label, value, valueClass, isLoading }: StatCardProps) {
+function StatCard({
+  label,
+  value,
+  valueClass,
+  isLoading,
+  series,
+  seriesColor,
+  seriesInverted,
+}: StatCardProps) {
+  const hasSeries = !!series && series.length >= 2
   return (
-    <div className="surface-3 rounded-xl p-2.5 md:p-4 border border-ash min-w-0">
+    <div className="surface-3 rounded-xl p-2.5 md:p-4 border border-ash min-w-0 relative overflow-hidden">
       <p className="text-[9px] md:text-[10px] uppercase tracking-[0.2em] text-bone/50 font-body truncate">
         {label}
       </p>
@@ -226,6 +287,20 @@ function StatCard({ label, value, valueClass, isLoading }: StatCardProps) {
       >
         {isLoading ? <Shimmer className="h-5 w-14 mt-0.5" /> : value}
       </div>
+      {hasSeries && !isLoading && (
+        <div className="mt-2">
+          <SparkLine
+            data={series}
+            width={56}
+            height={14}
+            color={seriesColor ?? "var(--ember)"}
+            inverted={!!seriesInverted}
+            fill
+            label={`${label} trend`}
+            className="opacity-90"
+          />
+        </div>
+      )}
     </div>
   )
 }

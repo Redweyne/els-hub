@@ -7,7 +7,7 @@ import { useParams } from "next/navigation"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion, useReducedMotion } from "framer-motion"
-import { Calendar, ChevronRight, Trophy, TrendingUp } from "lucide-react"
+import { Calendar, ChevronRight, Sword, TrendingUp } from "lucide-react"
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
@@ -21,6 +21,15 @@ import { Shimmer } from "@/components/motion/Shimmer"
 import { Section, Stagger, StaggerItem } from "@/components/motion/Section"
 import { NetworkError } from "@/components/ui/network-error"
 import { deriveAchievements } from "@/lib/achievements"
+import {
+  getEventConfig,
+  type EventTypeCode,
+  type GWDailyMeta,
+  type OakReportCard,
+} from "@/lib/events/config"
+import { DayTypeBadge } from "@/components/event/gw"
+import { HeatGrid } from "@/components/dataviz"
+import { GW_DAY_SCHEDULE } from "@/lib/events/config"
 import { cn } from "@/lib/cn"
 
 interface Member {
@@ -39,6 +48,9 @@ interface EventRef {
   id: string
   title: string
   created_at: string
+  event_type_code: string | null
+  meta_json: GWDailyMeta | null
+  faction_result_json: OakReportCard | null
 }
 
 interface EventScoreRow {
@@ -115,6 +127,7 @@ export default function MemberProfilePage() {
   const [scores, setScores] = useState<EventScoreRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [typeFilter, setTypeFilter] = useState<"all" | EventTypeCode>("all")
 
   const loadMember = async () => {
     setError(null)
@@ -138,7 +151,7 @@ export default function MemberProfilePage() {
         .from("event_scores")
         .select(
           `id, event_id, rank_value, points, accept_current, accept_max,
-           events:event_id(id, title, created_at)`,
+           events:event_id(id, title, created_at, event_type_code, meta_json, faction_result_json)`,
         )
         .eq("member_id", memberId)
         .order("created_at", { ascending: false })
@@ -186,20 +199,35 @@ export default function MemberProfilePage() {
       : 0
   const initial = member.canonical_name.trim()[0]?.toUpperCase() ?? "?"
 
-  const achievements = deriveAchievements(
-    scores.map((s) => {
-      const ev = Array.isArray(s.events) ? s.events[0] : s.events
-      return {
-        eventId: s.event_id,
-        rank: s.rank_value,
-        points: s.points,
-        createdAt: ev?.created_at ?? new Date().toISOString(),
-      }
-    }),
-    {
-      isSeeded: !!member.titles?.includes("seeded"),
-    },
-  )
+  const enrichedScores = scores.map((s) => {
+    const ev = Array.isArray(s.events) ? s.events[0] : s.events
+    const code = ev?.event_type_code ?? null
+    const fr = ev?.faction_result_json ?? null
+    const memberName = member.canonical_name
+    const oakBestOf: Array<"total" | "kill" | "occupation"> = []
+    if (fr && "best_of_all" in fr && fr.best_of_all) {
+      const best = fr.best_of_all
+      if (best.total?.name && best.total.name === memberName) oakBestOf.push("total")
+      if (best.kill?.name && best.kill.name === memberName) oakBestOf.push("kill")
+      if (best.occupation?.name && best.occupation.name === memberName) oakBestOf.push("occupation")
+    }
+    return {
+      eventId: s.event_id,
+      rank: s.rank_value,
+      points: s.points,
+      createdAt: ev?.created_at ?? new Date().toISOString(),
+      eventTypeCode: code,
+      gwMeta: ev?.meta_json ?? null,
+      oakPlacement: fr?.placement ?? null,
+      oakBestOf: oakBestOf.length > 0 ? oakBestOf : null,
+    }
+  })
+  const achievements = deriveAchievements(enrichedScores, {
+    isSeeded: !!member.titles?.includes("seeded"),
+  })
+
+  // GW streak: count consecutive most-recent GW dailies (any threshold) participated.
+  const gwStreak = computeGWStreak(enrichedScores)
 
   return (
     <>
@@ -402,9 +430,78 @@ export default function MemberProfilePage() {
             </Section>
           )}
 
+          {(() => {
+            // Build the Day-Type Mastery grid from GW Daily scores.
+            const gwScores = enrichedScores.filter(
+              (s) => s.eventTypeCode === "gw_daily" && s.gwMeta,
+            )
+            if (gwScores.length === 0) return null
+            // Cells[row][col] where row=0=War, row=1=Hegemony, col=0..4=day-type.
+            const stats: Record<
+              string,
+              { hit: number; total: number }
+            > = {}
+            for (const s of gwScores) {
+              const cycle = s.gwMeta!.cycle
+              const dayType = s.gwMeta!.day_type
+              const key = `${cycle}-${dayType}`
+              if (!stats[key]) stats[key] = { hit: 0, total: 0 }
+              stats[key].total++
+              if (s.points >= s.gwMeta!.min_points) stats[key].hit++
+            }
+            const cells: Array<Array<number | null>> = [
+              GW_DAY_SCHEDULE.map((d) => {
+                const k = `war-${d.type}`
+                return stats[k] ? stats[k].hit / stats[k].total : null
+              }),
+              GW_DAY_SCHEDULE.map((d) => {
+                const k = `hegemony-${d.type}`
+                return stats[k] ? stats[k].hit / stats[k].total : null
+              }),
+            ]
+            const labels: Array<Array<string | null>> = [
+              GW_DAY_SCHEDULE.map((d) => {
+                const k = `war-${d.type}` as const
+                return stats[k]
+                  ? `War · ${d.label}: ${stats[k].hit}/${stats[k].total} cleared`
+                  : null
+              }),
+              GW_DAY_SCHEDULE.map((d) => {
+                const k = `hegemony-${d.type}` as const
+                return stats[k]
+                  ? `Hegemony · ${d.label}: ${stats[k].hit}/${stats[k].total} cleared`
+                  : null
+              }),
+            ]
+            return (
+              <Section from="up">
+                <div className="surface-3 rounded-xl border border-ash p-4">
+                  <Eyebrow tone="ember" size="xs">
+                    Day-Type Mastery
+                  </Eyebrow>
+                  <p className="text-[11px] text-bone/55 font-body mt-0.5 mb-3">
+                    Threshold-clear rate across each GW day type.
+                  </p>
+                  <div className="overflow-x-auto -mx-1 px-1 [&::-webkit-scrollbar]:hidden">
+                    <HeatGrid
+                      cells={cells}
+                      labels={labels}
+                      cellSize={24}
+                      gap={3}
+                      color="var(--ember)"
+                      rowLabels={["War", "Heg"]}
+                      colLabels={GW_DAY_SCHEDULE.map((d) => d.short)}
+                      ariaLabel="Day-type threshold mastery grid"
+                    />
+                  </div>
+                </div>
+              </Section>
+            )
+          })()}
+
           <Section from="up">
             <OrnateDivider variant="fleur" className="mb-6" />
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <div>
                 <Eyebrow tone="ember" size="sm">
                   Event History
@@ -415,14 +512,27 @@ export default function MemberProfilePage() {
                     : "No appearances yet"}
                 </DisplayHeading>
               </div>
-              {scores.length > 0 && (
-                <Trophy
-                  size={20}
-                  className={cn("text-ember opacity-60")}
-                  aria-hidden="true"
-                />
+              {gwStreak >= 2 && (
+                <div className="flex flex-col items-end">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.18em] text-bone/55 font-body">
+                    <Sword size={11} aria-hidden="true" />
+                    GW Streak
+                  </span>
+                  <span className="font-mono text-2xl font-bold text-blood-light tabular-nums leading-tight">
+                    {gwStreak}
+                  </span>
+                </div>
               )}
             </div>
+
+            {/* Event-type filter tabs (mobile-first horizontal pills) */}
+            {scores.length > 0 && (
+              <EventTypeTabs
+                scores={scores}
+                value={typeFilter}
+                onChange={setTypeFilter}
+              />
+            )}
 
             {scores.length === 0 ? (
               <div className="surface-3 rounded-xl p-8 text-center border border-ash">
@@ -432,12 +542,19 @@ export default function MemberProfilePage() {
                 </p>
               </div>
             ) : (
-              <Stagger className="space-y-2">
-                {scores.slice(0, 20).map((score) => (
-                  <StaggerItem key={score.id}>
-                    <ScoreRow score={score} />
-                  </StaggerItem>
-                ))}
+              <Stagger className="space-y-2 mt-3">
+                {scores
+                  .filter((s) => {
+                    if (typeFilter === "all") return true
+                    const ev = Array.isArray(s.events) ? s.events[0] : s.events
+                    return getEventConfig(ev?.event_type_code)?.code === typeFilter
+                  })
+                  .slice(0, 20)
+                  .map((score) => (
+                    <StaggerItem key={score.id}>
+                      <ScoreRow score={score} />
+                    </StaggerItem>
+                  ))}
               </Stagger>
             )}
           </Section>
@@ -447,6 +564,95 @@ export default function MemberProfilePage() {
       <BottomNav />
     </>
   )
+}
+
+function EventTypeTabs({
+  scores,
+  value,
+  onChange,
+}: {
+  scores: EventScoreRow[]
+  value: "all" | EventTypeCode
+  onChange: (v: "all" | EventTypeCode) => void
+}) {
+  // Compute counts per type from scores.
+  const counts: Record<"all" | EventTypeCode, number> = {
+    all: scores.length,
+    fcu: 0,
+    oak: 0,
+    gw_daily: 0,
+    gw_campaign: 0,
+  }
+  for (const s of scores) {
+    const ev = Array.isArray(s.events) ? s.events[0] : s.events
+    const code = getEventConfig(ev?.event_type_code)?.code
+    if (code) counts[code] = (counts[code] ?? 0) + 1
+  }
+  const tabs: Array<{ key: "all" | EventTypeCode; label: string }> = [
+    { key: "all", label: "All" },
+    { key: "fcu", label: "FCU" },
+    { key: "oak", label: "Oak" },
+    { key: "gw_daily", label: "GW" },
+  ]
+  return (
+    <div
+      role="tablist"
+      aria-label="Event type filter"
+      className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 [&::-webkit-scrollbar]:hidden mb-1"
+      style={{ scrollbarWidth: "none" }}
+    >
+      {tabs.map((t) => {
+        const count = counts[t.key]
+        if (t.key !== "all" && count === 0) return null
+        const isActive = value === t.key
+        return (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(t.key)}
+            className={cn(
+              "flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-full border text-[11px] uppercase tracking-[0.16em] font-bold min-h-[40px]",
+              "transition-all duration-150 active:scale-[0.97]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+              isActive
+                ? "bg-ember text-ink border-ember"
+                : "bg-smoke/50 text-bone/65 border-ash hover:border-ember/30 hover:text-bone",
+            )}
+          >
+            {t.label}
+            <span
+              className={cn(
+                "font-mono tabular-nums px-1.5 py-0.5 rounded text-[10px]",
+                isActive ? "bg-ink/30 text-ink" : "bg-bone/10 text-bone/65",
+              )}
+            >
+              {count}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function computeGWStreak(scores: Array<{ eventTypeCode?: string | null; createdAt: string }>): number {
+  const sorted = [...scores].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )
+  let n = 0
+  for (const s of sorted) {
+    const code = getEventConfig(s.eventTypeCode)?.code
+    if (code === "gw_daily") {
+      n++
+    } else if (code === "gw_campaign") {
+      // skip campaigns; they're parent containers
+      continue
+    } else {
+      break
+    }
+  }
+  return n
 }
 
 function StatTile({
@@ -511,6 +717,30 @@ function ScoreRow({ score }: { score: EventScoreRow }) {
           #{score.rank_value}
         </span>
         <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+            {(() => {
+              const cfg = getEventConfig(event.event_type_code)
+              return cfg ? (
+                <span
+                  className={cn(
+                    "inline-flex items-center text-[9px] font-mono font-bold uppercase tracking-[0.1em] px-1.5 py-0.5 rounded border",
+                    cfg.accent === "ember" && "bg-ember/12 text-ember border-ember/35",
+                    cfg.accent === "blood" && "bg-blood/15 text-blood-light border-blood/35",
+                    cfg.accent === "blood-light" && "bg-blood-light/12 text-blood-light border-blood-light/35",
+                  )}
+                >
+                  {cfg.abbrev}
+                </span>
+              ) : null
+            })()}
+            {event.event_type_code === "gw_daily" && event.meta_json && (
+              <DayTypeBadge
+                dayType={event.meta_json.day_type}
+                cycle={event.meta_json.cycle}
+                size="xs"
+              />
+            )}
+          </div>
           <p className="font-semibold text-bone text-sm md:text-base line-clamp-1">
             {event.title}
           </p>

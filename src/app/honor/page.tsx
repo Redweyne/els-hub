@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion, useReducedMotion } from "framer-motion"
-import { ChevronRight, Trophy } from "lucide-react"
+import { ChevronRight, Crown, Trophy } from "lucide-react"
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
@@ -14,16 +14,14 @@ import {
   ELSEmblemV2,
   TrophySVG,
   MedalSVG,
-  FactionCallUpGlyph,
-  GloryOfOakvaleGlyph,
-  GovernorsWarGlyph,
   OrnateDivider,
 } from "@/components/heraldry"
 import type { MedalTier } from "@/components/heraldry"
 import { Eyebrow, DisplayHeading, Numeric } from "@/components/typography"
+import { MemberAvatar } from "@/components/member"
 import { Shimmer } from "@/components/motion/Shimmer"
-import { Section } from "@/components/motion/Section"
 import { NetworkError } from "@/components/ui/network-error"
+import { getEventConfig, type OakReportCard } from "@/lib/events/config"
 import { cn } from "@/lib/cn"
 
 interface HonorRow {
@@ -31,45 +29,27 @@ interface HonorRow {
   title: string
   event_type_code: string | null
   created_at: string
-  faction_result_json: { placement?: number } | null
+  faction_result_json: (OakReportCard & { placement?: number }) | { placement?: number } | null
 }
 
-const EVENT_META: Record<
-  string,
-  {
-    label: string
-    Glyph: typeof FactionCallUpGlyph
-    short: string
-  }
-> = {
-  fcu: { label: "Faction Call-Up", Glyph: FactionCallUpGlyph, short: "FCU" },
-  goa: {
-    label: "Glory of Oakvale",
-    Glyph: GloryOfOakvaleGlyph,
-    short: "GoO",
-  },
-  sgoa: {
-    label: "Supreme Glory",
-    Glyph: GloryOfOakvaleGlyph,
-    short: "SGoO",
-  },
-  "gw-sl": {
-    label: "Governor's War · SL",
-    Glyph: GovernorsWarGlyph,
-    short: "GW",
-  },
-  "gw-fh": {
-    label: "Governor's War · FH",
-    Glyph: GovernorsWarGlyph,
-    short: "GW",
-  },
+interface HallOfFameMember {
+  id: string
+  name: string
+  tier: string | null
+  trophyCount: number
 }
 
 const FILTER_OPTIONS: { key: string; label: string; codes: string[] }[] = [
   { key: "all", label: "All", codes: [] },
   { key: "fcu", label: "FCU", codes: ["fcu"] },
-  { key: "goa", label: "Oakvale", codes: ["goa", "sgoa"] },
-  { key: "gw", label: "Governor's War", codes: ["gw-sl", "gw-fh"] },
+  // Include legacy "goa"/"sgoa" so older rows still match the Oak filter even
+  // before the migration sweeps them up.
+  { key: "oak", label: "Oak", codes: ["oak", "goa", "sgoa"] },
+  {
+    key: "gw",
+    label: "Governor's War",
+    codes: ["gw_daily", "gw_campaign", "gw-sl", "gw-fh"],
+  },
 ]
 
 export default function HonorWallPage() {
@@ -133,12 +113,50 @@ export default function HonorWallPage() {
     return { gold, silver, bronze, other, total: honors.length }
   }, [honors])
 
+  const thisMonthCount = useMemo(() => {
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = now.getMonth()
+    return honors.filter((h) => {
+      const d = new Date(h.created_at)
+      return d.getFullYear() === y && d.getMonth() === m
+    }).length
+  }, [honors])
+
+  const hallOfFame = useMemo<HallOfFameMember[]>(() => {
+    // Aggregate Oak "Best of All" appearances by member name. The Oak
+    // OCR captures these names verbatim, so we collapse case-only diffs.
+    const counts = new Map<string, number>()
+    for (const h of honors) {
+      const fr = h.faction_result_json as OakReportCard | null
+      if (!fr || !("best_of_all" in fr) || !fr.best_of_all) continue
+      for (const cat of ["total", "kill", "occupation"] as const) {
+        const hero = fr.best_of_all[cat]
+        if (hero?.name) {
+          const key = hero.name.trim()
+          counts.set(key, (counts.get(key) ?? 0) + 1)
+        }
+      }
+    }
+    const list: HallOfFameMember[] = Array.from(counts.entries())
+      .filter(([, c]) => c >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([name, count]) => ({
+        id: name,
+        name,
+        tier: null,
+        trophyCount: count,
+      }))
+    return list
+  }, [honors])
+
   return (
     <>
       <Header title="Honor Wall" />
 
       <main id="main" className="min-h-screen pb-bottom-nav surface-1">
-        <HonorHero totals={totals} isLoading={isLoading} />
+        <HonorHero totals={totals} thisMonth={thisMonthCount} isLoading={isLoading} />
 
         <div className="px-5 md:px-8 max-w-2xl mx-auto pt-4">
           {!isLoading && honors.length > 0 && (
@@ -199,6 +217,47 @@ export default function HonorWallPage() {
             </div>
           )}
 
+          {!isLoading && hallOfFame.length > 0 && (
+            <div className="mt-12">
+              <OrnateDivider variant="fleur" label="Hall of Fame" />
+              <p className="mt-3 text-[12px] text-bone/55 font-body text-center">
+                Members named in &ldquo;Best of All&rdquo; across multiple Oakvale matches.
+              </p>
+              <ul className="mt-5 grid grid-cols-2 md:grid-cols-3 gap-2.5">
+                {hallOfFame.map((m, idx) => (
+                  <motion.li
+                    key={m.name}
+                    initial={{ opacity: 0, y: 8 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true }}
+                    transition={{
+                      duration: 0.5,
+                      delay: Math.min(idx * 0.05, 0.4),
+                      ease: [0.2, 0.8, 0.2, 1],
+                    }}
+                    className="surface-3 rounded-xl border border-ember/30 px-3 py-3 flex items-center gap-2.5"
+                  >
+                    <MemberAvatar
+                      name={m.name}
+                      tier={m.tier ?? "frontliner"}
+                      size={32}
+                      idScope={`hof-${idx}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-bone truncate">
+                        {m.name}
+                      </p>
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-ember font-mono mt-0.5 inline-flex items-center gap-1">
+                        <Crown size={9} aria-hidden="true" />
+                        {m.trophyCount}× hero
+                      </p>
+                    </div>
+                  </motion.li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {!isLoading && honors.length > 0 && (
             <div className="pt-12">
               <OrnateDivider variant="fleur" label="A faction remembered" />
@@ -214,6 +273,7 @@ export default function HonorWallPage() {
 
 function HonorHero({
   totals,
+  thisMonth,
   isLoading,
 }: {
   totals: {
@@ -223,6 +283,7 @@ function HonorHero({
     other: number
     total: number
   }
+  thisMonth: number
   isLoading: boolean
 }) {
   return (
@@ -254,6 +315,12 @@ function HonorHero({
             >
               Honor Wall
             </DisplayHeading>
+            {!isLoading && thisMonth > 0 && (
+              <p className="mt-1.5 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-ember font-mono font-bold">
+                <span className="w-1.5 h-1.5 rounded-full bg-ember animate-pulse" aria-hidden="true" />
+                {thisMonth} this month
+              </p>
+            )}
           </div>
         </div>
 
@@ -331,11 +398,8 @@ function HeroTile({
 
 function HonorCard({ honor, index }: { honor: HonorRow; index: number }) {
   const reducedMotion = useReducedMotion()
-  const meta = EVENT_META[honor.event_type_code ?? "fcu"] ?? {
-    label: "Event",
-    Glyph: FactionCallUpGlyph,
-    short: "EVT",
-  }
+  const cfg = getEventConfig(honor.event_type_code) ?? getEventConfig("fcu")!
+  const meta = { label: cfg.label, Glyph: cfg.Glyph, short: cfg.abbrev }
   const placement = honor.faction_result_json?.placement ?? 0
   const tier: MedalTier | "slate" =
     placement === 1
