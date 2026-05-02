@@ -57,6 +57,8 @@ interface ProcessingEventRow {
   title: string
   event_type_code: EventTypeCode
   meta_json: GWDailyMeta | GWCampaignMeta | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 interface CampaignDaily {
@@ -197,6 +199,8 @@ export default function Home() {
         .from("events")
         .select("*")
         .eq("status", "processing")
+        .neq("event_type_code", "gw_campaign")
+        .gte("updated_at", new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString())
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle()
@@ -205,15 +209,26 @@ export default function Home() {
       // ── War room: load active GW campaign + dailies + other processing events.
       const { data: allProcessing } = await supabase
         .from("events")
-        .select("id, title, event_type_code, meta_json")
+        .select("id, title, event_type_code, meta_json, created_at, updated_at")
         .eq("status", "processing")
         .order("created_at", { ascending: false })
       const procRows = (allProcessing ?? []) as ProcessingEventRow[]
       const campaign = procRows.find((e) => e.event_type_code === "gw_campaign") ?? null
+      const recentProcessingCutoff = Date.now() - 3 * 60 * 60 * 1000
+      const isRecentProcessing = (event: ProcessingEventRow) => {
+        const stamp = event.updated_at || event.created_at
+        return stamp ? new Date(stamp).getTime() >= recentProcessingCutoff : false
+      }
+      const onePerType = new Map<EventTypeCode, ProcessingEventRow>()
+      for (const event of procRows) {
+        if (event.event_type_code === "gw_campaign") continue
+        if (!isRecentProcessing(event)) continue
+        if (!onePerType.has(event.event_type_code)) {
+          onePerType.set(event.event_type_code, event)
+        }
+      }
       setActiveCampaign(campaign)
-      setOtherProcessing(
-        procRows.filter((e) => e.event_type_code !== "gw_campaign"),
-      )
+      setOtherProcessing(Array.from(onePerType.values()).slice(0, 3))
 
       if (campaign && campaign.meta_json && "start_date_iso" in campaign.meta_json) {
         const meta = campaign.meta_json as GWCampaignMeta
@@ -738,4 +753,3 @@ export default function Home() {
     </>
   )
 }
-
