@@ -6,25 +6,40 @@ import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion } from "framer-motion"
-import { AlertCircle, Calendar, ChevronRight, Flag, Loader2, Sword } from "lucide-react"
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronRight,
+  Loader2,
+  Sword,
+} from "lucide-react"
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Eyebrow, DisplayHeading } from "@/components/typography"
-import { GovernorsWarGlyph } from "@/components/heraldry"
-import { getDayAtOffset } from "@/lib/gw/schedule"
+import { Eyebrow } from "@/components/typography"
+import { GovernorsWarGlyph, getDayTypeGlyph } from "@/components/heraldry"
+import {
+  GW_DAY_SCHEDULE,
+  type GWCycle,
+  type GWDayType,
+} from "@/lib/events/config"
+import { apiPath } from "@/lib/paths"
 import { cn } from "@/lib/cn"
 
 /**
- * `<input type="datetime-local">` returns a "yyyy-MM-ddTHH:mm" string with no
- * timezone. The user enters Paris time directly. We pair it with the explicit
- * "Europe/Paris" tz on the server side.
+ * Campaign creation flow (mobile-first).
  *
- * This page is mobile-first: touch targets are 44–56px, the preview list is
- * a vertical timeline (no horizontal scroll on phones), and the submit
- * button is the largest tap target on the page.
+ * One question only: "What day-type is TODAY?" Officer picks a cycle (War or
+ * Hegemony) and a day-type (Robbing/Kingpin/Influence/Speedups/Massacre).
+ * The server back-solves the implicit Day-1 anchor, no fixed end date — the
+ * campaign runs until the officer presses "End Campaign" later.
+ *
+ * UX guards:
+ *  - Buttons are 56–64px tap targets.
+ *  - Submit triggers a server route (created_by gets set there; RLS bypass via service role).
+ *  - Errors surface in a clear blood-tinted card, never silently.
  */
 export default function NewCampaignPage() {
   const router = useRouter()
@@ -33,20 +48,9 @@ export default function NewCampaignPage() {
   const [error, setError] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Default: today at 02:00 Paris (the natural campaign anchor).
-  const defaultStart = useMemo(() => {
-    const now = new Date()
-    // Format YYYY-MM-DDT02:00 in user-local time. We don't know user's tz,
-    // but the input is labeled clearly as Paris so officer can adjust.
-    const y = now.getFullYear()
-    const m = (now.getMonth() + 1).toString().padStart(2, "0")
-    const d = now.getDate().toString().padStart(2, "0")
-    return `${y}-${m}-${d}T02:00`
-  }, [])
-
   const [title, setTitle] = useState("")
-  const [startLocal, setStartLocal] = useState(defaultStart)
-  const [expectedDays, setExpectedDays] = useState(50)
+  const [cycle, setCycle] = useState<GWCycle>("war")
+  const [dayInCycle, setDayInCycle] = useState<1 | 2 | 3 | 4 | 5>(1)
 
   useEffect(() => {
     const check = async () => {
@@ -62,12 +66,12 @@ export default function NewCampaignPage() {
           router.push("/login")
           return
         }
-        const { data: profile, error } = await supabase
+        const { data: profile, error: profileErr } = await supabase
           .from("profiles")
           .select("faction_id, platform_role")
           .eq("auth_user_id", session.user.id)
           .single()
-        if (error || !profile) {
+        if (profileErr || !profile) {
           router.push("/")
           return
         }
@@ -76,13 +80,15 @@ export default function NewCampaignPage() {
           return
         }
         setFactionId(profile.faction_id)
-        if (!title) {
-          setTitle(`Governor's War — ${new Date().toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-          })}`)
-        }
+        setTitle(
+          (current) =>
+            current ||
+            `Governor's War — ${new Date().toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}`,
+        )
       } catch {
         router.push("/login")
       } finally {
@@ -90,62 +96,40 @@ export default function NewCampaignPage() {
       }
     }
     check()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router])
 
-  // Build a preview of the upcoming 10 days from the entered start.
-  const startIso = useMemo(() => {
-    if (!startLocal) return null
-    // Treat the entered time as Paris-local. Build an ISO that, when re-parsed,
-    // points to the same Paris-local clock time.
-    return new Date(startLocal).toISOString()
-  }, [startLocal])
-
-  const preview = useMemo(() => {
-    if (!startIso) return []
-    return Array.from({ length: 10 }).map((_, i) =>
-      getDayAtOffset(startIso, i, expectedDays),
-    )
-  }, [startIso, expectedDays])
+  const selectedDay = useMemo(
+    () => GW_DAY_SCHEDULE.find((d) => d.dayInCycle === dayInCycle)!,
+    [dayInCycle],
+  )
+  const threshold =
+    cycle === "war" ? selectedDay.warThreshold : selectedDay.hegemonyThreshold
+  const Glyph = getDayTypeGlyph(selectedDay.type)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!factionId) return
-    if (!title.trim() || !startLocal) {
-      setError("Title and start date are required.")
+    if (!title.trim()) {
+      setError("Title is required.")
       return
     }
     setIsSubmitting(true)
     setError("")
     try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      )
-      const startIsoForInsert = new Date(startLocal).toISOString()
-      const meta = {
-        start_date_iso: startIsoForInsert,
-        expected_days: expectedDays,
-        tz: "Europe/Paris" as const,
-      }
-      const endsAt = new Date(
-        new Date(startIsoForInsert).getTime() + expectedDays * 24 * 60 * 60 * 1000,
-      ).toISOString()
-      const { data, error } = await supabase
-        .from("events")
-        .insert({
-          faction_id: factionId,
-          event_type_code: "gw_campaign",
+      const res = await fetch(apiPath("/admin/campaigns/start"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           title: title.trim(),
-          status: "processing",
-          starts_at: startIsoForInsert,
-          ends_at: endsAt,
-          meta_json: meta,
-        })
-        .select("id")
-        .single()
-      if (error) throw error
-      router.push(`/events/${data.id}`)
+          today_cycle: cycle,
+          today_day_in_cycle: dayInCycle,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.id) {
+        throw new Error(json.error ?? "Failed to start campaign")
+      }
+      router.push(`/events/${json.id}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start campaign")
     } finally {
@@ -178,8 +162,7 @@ export default function NewCampaignPage() {
         className="min-h-screen bg-ink pt-20 pb-bottom-nav surface-1 px-5"
       >
         <section className="max-w-md mx-auto">
-          {/* Hero */}
-          <div className="flex items-start gap-3 pt-2 pb-6">
+          <div className="flex items-start gap-3 pt-2 pb-5">
             <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-ink/80 border border-ember/40 flex items-center justify-center shadow-[0_0_18px_-6px_color-mix(in_oklab,var(--ember)_60%,transparent)]">
               <GovernorsWarGlyph size={32} />
             </div>
@@ -187,17 +170,17 @@ export default function NewCampaignPage() {
               <Eyebrow tone="ember" size="sm">
                 Start Campaign
               </Eyebrow>
-              <DisplayHeading level={2} className="mt-1 text-2xl">
+              <h1 className="mt-1 font-display text-2xl font-semibold text-bone tracking-[-0.01em]">
                 Governor&apos;s War
-              </DisplayHeading>
-              <p className="mt-1.5 text-bone/55 text-[13px] font-body">
-                Set the start anchor in Paris time. Days roll over at 02:00 Paris automatically.
+              </h1>
+              <p className="mt-1.5 text-bone/60 text-[13px] font-body">
+                Pick the day-type that matches <b className="text-bone">today</b> in-game.
+                Daily uploads will rotate from there. End the campaign whenever GW finishes — no fixed length.
               </p>
             </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Title */}
+          <form onSubmit={handleSubmit} className="space-y-4">
             <Card className="bg-smoke/70 border-ash">
               <CardContent className="p-4 md:p-5">
                 <label
@@ -219,119 +202,150 @@ export default function NewCampaignPage() {
               </CardContent>
             </Card>
 
-            {/* Start anchor */}
+            {/* Cycle picker */}
             <Card className="bg-smoke/70 border-ash">
               <CardContent className="p-4 md:p-5 space-y-4">
                 <div>
-                  <label
-                    htmlFor="gw-start"
-                    className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-bone/55 font-body mb-2"
-                  >
-                    <Calendar size={12} aria-hidden="true" />
-                    Day-1 Anchor (Paris time)
-                  </label>
-                  <input
-                    id="gw-start"
-                    type="datetime-local"
-                    value={startLocal}
-                    onChange={(e) => setStartLocal(e.target.value)}
-                    disabled={isSubmitting}
-                    className="w-full bg-ink/60 border border-ash rounded-lg px-3 py-3 text-bone focus:outline-none focus:border-ember/60 text-base"
-                  />
-                  <p className="mt-2 text-[11px] text-bone/45 font-body">
-                    Day 1 = Robbing. Days advance at 02:00 Paris.
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-bone/55 font-body mb-2 inline-flex items-center gap-1.5">
+                    <Sword size={11} aria-hidden="true" />
+                    Today is...
                   </p>
+                  <div
+                    role="radiogroup"
+                    aria-label="Cycle"
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    {(
+                      [
+                        { v: "war", label: "War", caption: "high stakes" },
+                        { v: "hegemony", label: "Hegemony", caption: "lower stakes" },
+                      ] as const
+                    ).map((c) => {
+                      const active = cycle === c.v
+                      return (
+                        <button
+                          key={c.v}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setCycle(c.v)}
+                          disabled={isSubmitting}
+                          className={cn(
+                            "min-h-[64px] rounded-xl border transition-all duration-150 active:scale-[0.97]",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+                            "flex flex-col items-center justify-center px-3 py-2",
+                            active
+                              ? c.v === "war"
+                                ? "bg-blood/25 text-bone border-blood/60 shadow-[0_0_14px_-6px_color-mix(in_oklab,var(--blood-light)_60%,transparent)]"
+                                : "bg-ember/20 text-ink border-ember/60 shadow-[0_0_14px_-6px_color-mix(in_oklab,var(--ember)_60%,transparent)]"
+                              : "bg-ink/60 text-bone/65 border-ash hover:border-ember/30 hover:text-bone",
+                          )}
+                        >
+                          <span className="font-display text-base font-semibold uppercase tracking-[0.16em]">
+                            {c.label}
+                          </span>
+                          <span className="text-[10px] uppercase tracking-[0.18em] text-bone/55 mt-0.5">
+                            {c.caption}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
 
+                {/* Day-type picker — 5 buttons with day glyphs */}
                 <div>
-                  <label
-                    htmlFor="gw-days"
-                    className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-bone/55 font-body mb-2"
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-bone/55 font-body mb-2">
+                    Day-Type
+                  </p>
+                  <div
+                    role="radiogroup"
+                    aria-label="Day type"
+                    className="grid grid-cols-5 gap-1.5"
                   >
-                    <Flag size={12} aria-hidden="true" />
-                    Expected Duration
-                  </label>
-                  <div className="flex gap-2">
-                    {[40, 45, 50].map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => setExpectedDays(n)}
-                        disabled={isSubmitting}
-                        aria-pressed={expectedDays === n}
-                        className={cn(
-                          "flex-1 min-h-[48px] rounded-lg border text-sm font-mono font-bold tabular-nums transition-all duration-150 active:scale-[0.97]",
-                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
-                          expectedDays === n
-                            ? "bg-ember text-ink border-ember shadow-[0_0_12px_-4px_color-mix(in_oklab,var(--ember)_60%,transparent)]"
-                            : "bg-ink/60 text-bone/70 border-ash hover:border-ember/40 hover:text-bone",
-                        )}
-                      >
-                        {n} days
-                      </button>
-                    ))}
+                    {GW_DAY_SCHEDULE.map((dc) => {
+                      const TypeGlyph = getDayTypeGlyph(dc.type)
+                      const active = dayInCycle === dc.dayInCycle
+                      return (
+                        <button
+                          key={dc.type}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setDayInCycle(dc.dayInCycle)}
+                          disabled={isSubmitting}
+                          className={cn(
+                            "min-h-[68px] rounded-lg border transition-all duration-150 active:scale-[0.97]",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+                            "flex flex-col items-center justify-center px-1 py-1",
+                            active
+                              ? "bg-ember text-ink border-ember shadow-[0_0_14px_-6px_color-mix(in_oklab,var(--ember)_60%,transparent)]"
+                              : "bg-ink/40 text-bone/65 border-ash hover:border-ember/30",
+                          )}
+                          aria-label={`Day ${dc.dayInCycle}, ${dc.label}`}
+                        >
+                          <TypeGlyph
+                            size={22}
+                            className={cn(active ? "text-ink" : "text-bone/70")}
+                          />
+                          <span
+                            className={cn(
+                              "mt-1 text-[9px] font-mono font-bold uppercase tracking-[0.08em] leading-none",
+                              active ? "text-ink" : "text-bone/70",
+                            )}
+                          >
+                            D{dc.dayInCycle}
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
+                  <p className="text-[10px] text-bone/45 font-body mt-2 text-center">
+                    {selectedDay.label} → {selectedDay.description}
+                  </p>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Preview */}
-            {preview.length > 0 && (
-              <div>
-                <Eyebrow tone="ember" size="xs">
-                  First 10 Days · Schedule Preview
-                </Eyebrow>
-                <ol className="mt-3 space-y-1.5">
-                  {preview.map((p, i) => (
-                    <li
-                      key={i}
-                      className={cn(
-                        "flex items-center gap-3 px-3 py-2.5 rounded-lg border",
-                        p.cycle === "war"
-                          ? "bg-blood/10 border-blood/25"
-                          : "bg-ember/8 border-ember/25",
-                      )}
-                    >
-                      <span className="font-mono text-[11px] text-bone/45 tabular-nums w-7 flex-shrink-0">
-                        {p.dayOffset + 1}
-                      </span>
-                      <Sword
-                        size={12}
-                        className={cn(
-                          "flex-shrink-0",
-                          p.cycle === "war" ? "text-blood-light" : "text-ember",
-                        )}
-                        aria-hidden="true"
-                      />
-                      <span className="flex-1 text-sm font-semibold text-bone truncate">
-                        {p.config.label}
-                      </span>
-                      <span className="text-[10px] uppercase tracking-[0.14em] text-bone/45 font-body flex-shrink-0">
-                        {p.cycle === "war" ? "War" : "Hegemony"}
-                      </span>
-                      <span className="text-[11px] font-mono tabular-nums text-bone/65 flex-shrink-0">
-                        {p.minPoints >= 1_000_000
-                          ? `${(p.minPoints / 1_000_000).toFixed(1)}M`
-                          : `${(p.minPoints / 1_000).toFixed(0)}k`}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-                <p className="mt-3 text-[11px] text-bone/40 font-body">
-                  10-day super-cycle (5 War + 5 Hegemony) repeats until the
-                  campaign ends.
-                </p>
+            {/* Confirmation summary */}
+            <div
+              className={cn(
+                "rounded-xl border p-4",
+                cycle === "war" ? "bg-blood/10 border-blood/30" : "bg-ember/10 border-ember/30",
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <Glyph
+                  size={36}
+                  className={cycle === "war" ? "text-blood-light" : "text-ember"}
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-bone/55 font-body">
+                    Today
+                  </p>
+                  <p className="font-display text-lg font-semibold text-bone leading-tight">
+                    {cycle === "war" ? "War" : "Hegemony"} · Day {dayInCycle} · {selectedDay.label}
+                  </p>
+                  <p className="text-[11px] text-bone/55 font-mono mt-0.5">
+                    Threshold: {threshold.toLocaleString()} pts
+                  </p>
+                </div>
+                <CheckCircle2
+                  size={18}
+                  className={cycle === "war" ? "text-blood-light" : "text-ember"}
+                  aria-hidden="true"
+                />
               </div>
-            )}
+            </div>
 
             {error && (
               <div className="flex gap-2 bg-blood/10 border border-blood/30 rounded-lg p-3">
                 <AlertCircle
                   size={16}
-                  className="text-blood flex-shrink-0 mt-0.5"
+                  className="text-blood-light flex-shrink-0 mt-0.5"
                   aria-hidden="true"
                 />
-                <p className="text-xs text-blood">{error}</p>
+                <p className="text-xs text-blood-light">{error}</p>
               </div>
             )}
 
@@ -351,11 +365,15 @@ export default function NewCampaignPage() {
                 </>
               ) : (
                 <>
-                  Open Campaign
+                  Start Campaign
                   <ChevronRight size={18} className="ml-1" aria-hidden="true" />
                 </>
               )}
             </Button>
+
+            <p className="text-[10px] text-bone/40 font-body text-center pt-1">
+              You can end the campaign at any time from the campaign page.
+            </p>
           </form>
         </section>
       </main>

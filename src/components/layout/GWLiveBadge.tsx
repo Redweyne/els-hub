@@ -58,11 +58,17 @@ export function GWLiveBadge() {
         return
       }
       const meta = campaign.meta_json as GWCampaignMeta
+      // Skip campaigns that have been explicitly ended.
+      if (meta.ended_at_iso) {
+        setCampaignId(null)
+        setCampaignMeta(null)
+        return
+      }
       setCampaignId(campaign.id)
       setCampaignMeta(meta)
 
       // Determine which (if any) daily corresponds to today's auto-detected slot.
-      const active = getActiveGWDay(meta.start_date_iso, meta.expected_days)
+      const active = getActiveGWDay(meta.start_date_iso)
       const { data: dailies } = await supabase
         .from("events")
         .select("id, meta_json")
@@ -87,11 +93,7 @@ export function GWLiveBadge() {
 
   if (!campaignId || !campaignMeta) return null
 
-  const active = getActiveGWDay(
-    campaignMeta.start_date_iso,
-    campaignMeta.expected_days,
-    now,
-  )
+  const active = getActiveGWDay(campaignMeta.start_date_iso, now)
   const fmt = formatActiveDay(active, now)
   const cfg = getGWDayConfig(active.dayType)
   const Glyph = getDayTypeGlyph(active.dayType)

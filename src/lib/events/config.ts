@@ -61,7 +61,7 @@ export const EVENT_TYPES: Record<EventTypeCode, EventTypeConfig> = {
     Glyph: FactionCallUpGlyph,
     accent: "blood",
     uploadRoute: "/tracking/new?type=fcu",
-    tagline: "Weekly faction recruitment ranking.",
+    tagline: "Faction Call-Up ranking — runs whenever the game schedules it.",
     hasLeaderboard: true,
   },
   oak: {
@@ -220,10 +220,12 @@ export interface GWDailyMeta {
 
 /** GW Campaign metadata stored in events.meta_json. */
 export interface GWCampaignMeta {
+  /** Implicit Day-1 02:00 Paris anchor. We don't *show* this — we back-solve from "what day-type is today?". */
   start_date_iso: string
-  expected_days: number
   /** Officer-set timezone for day boundaries. Always "Europe/Paris" for now. */
   tz: "Europe/Paris"
+  /** When the officer ends the campaign. null = still running. */
+  ended_at_iso?: string | null
 }
 
 /** Oak metadata stored in events.faction_result_json. */

@@ -39,7 +39,7 @@ interface PlacementPoint {
 export interface FactionHeartbeatProps {
   /** Last 12 events: average rank trajectory. */
   recentEvents: ReadonlyArray<RankPoint>
-  /** Influence weekly aggregates (last ~8). */
+  /** Per-event influence trend (last ~8 events, oldest → newest). */
   influenceWeeks: ReadonlyArray<InfluencePoint>
   /** Placement distribution counts. */
   placementBuckets: ReadonlyArray<PlacementPoint>

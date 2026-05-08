@@ -73,7 +73,7 @@ export function CommandCenterHero({
   return (
     <section
       ref={sectionRef}
-      className="relative min-h-[88svh] md:min-h-[85vh] flex items-center overflow-hidden surface-2 film-grain-drift"
+      className="relative min-h-[64svh] md:min-h-[68vh] flex items-center overflow-hidden surface-2 film-grain-drift"
       aria-labelledby="hero-title"
     >
       <div
@@ -113,8 +113,8 @@ export function CommandCenterHero({
         </div>
       )}
 
-      <div className="relative z-10 w-full max-w-screen-xl mx-auto px-5 md:px-8 pt-20 pb-10 md:pt-24 md:pb-20">
-        <div className="flex flex-col md:flex-row md:items-center gap-6 md:gap-12">
+      <div className="relative z-10 w-full max-w-screen-xl mx-auto px-5 md:px-8 pt-20 pb-8 md:pt-24 md:pb-12">
+        <div className="flex flex-col md:flex-row md:items-center gap-5 md:gap-12">
           <motion.div
             className="flex-shrink-0 flex justify-center md:order-2 md:flex-1"
             style={emblemStyle}
@@ -123,11 +123,11 @@ export function CommandCenterHero({
             transition={{ duration: 1, ease: EASE }}
           >
             <ELSEmblemV2
-              size={240}
+              size={200}
               glow
               starCount={5}
               idScope="hero"
-              className="w-[56vw] max-w-[240px] h-auto md:w-[300px] md:max-w-none md:h-[300px] lg:w-[340px] lg:h-[340px]"
+              className="w-[44vw] max-w-[200px] h-auto md:w-[280px] md:max-w-none md:h-[280px] lg:w-[320px] lg:h-[320px]"
             />
           </motion.div>
 
@@ -151,7 +151,7 @@ export function CommandCenterHero({
             >
               <DisplayHeading
                 level={1}
-                className="mt-3 text-[2.25rem] leading-[1] md:text-6xl lg:text-7xl"
+                className="mt-2.5 text-[2rem] leading-[1] md:text-6xl lg:text-7xl"
                 as="h1"
               >
                 <span id="hero-title">ELYSIUM</span>
@@ -184,7 +184,7 @@ export function CommandCenterHero({
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.85 }}
-              className="mt-6 md:mt-8 grid grid-cols-3 gap-2 md:gap-3 md:max-w-lg"
+              className="mt-5 md:mt-7 grid grid-cols-3 gap-2 md:gap-3 md:max-w-lg"
             >
               <StatCard
                 label="Members"
@@ -227,28 +227,6 @@ export function CommandCenterHero({
         </div>
       </div>
 
-      {!reducedMotion && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 1.6, duration: 0.6 }}
-          className="absolute bottom-8 left-1/2 -translate-x-1/2 hidden md:flex flex-col items-center gap-2 pointer-events-none"
-          aria-hidden="true"
-        >
-          <span className="text-[9px] uppercase tracking-[0.35em] text-bone/40 font-body">
-            Scroll
-          </span>
-          <motion.div
-            animate={{ scaleY: [0.3, 1, 0.3] }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: "easeInOut",
-            }}
-            className="w-[1px] h-10 bg-gradient-to-b from-ember/70 to-transparent origin-top"
-          />
-        </motion.div>
-      )}
     </section>
   )
 }
@@ -275,32 +253,44 @@ function StatCard({
 }: StatCardProps) {
   const hasSeries = !!series && series.length >= 2
   return (
-    <div className="surface-3 rounded-xl p-2.5 md:p-4 border border-ash min-w-0 relative overflow-hidden">
-      <p className="text-[9px] md:text-[10px] uppercase tracking-[0.2em] text-bone/50 font-body truncate">
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-xl border min-w-0",
+        "surface-3 border-ash",
+        "p-3 md:p-4",
+      )}
+    >
+      <p className="text-[9px] md:text-[10px] uppercase tracking-[0.22em] text-bone/55 font-body truncate">
         {label}
       </p>
       <div
         className={cn(
-          "mt-1 md:mt-1.5 text-[15px] md:text-2xl font-bold font-mono tabular-nums leading-none",
+          "mt-1 md:mt-1.5 font-bold font-mono tabular-nums leading-none",
+          // Bigger value type for at-a-glance reading on phone
+          "text-[17px] md:text-[26px]",
           valueClass ?? "text-bone",
         )}
       >
         {isLoading ? <Shimmer className="h-5 w-14 mt-0.5" /> : value}
       </div>
-      {hasSeries && !isLoading && (
-        <div className="mt-2">
+      {hasSeries && !isLoading ? (
+        <div className="mt-2.5 md:mt-3">
           <SparkLine
             data={series}
-            width={56}
-            height={14}
+            width={84}
+            height={20}
             color={seriesColor ?? "var(--ember)"}
             inverted={!!seriesInverted}
             fill
+            showLastDot
             label={`${label} trend`}
-            className="opacity-90"
+            className="w-full opacity-95"
           />
         </div>
-      )}
+      ) : !isLoading ? (
+        // Reserve consistent vertical space when there's no series yet
+        <div className="mt-2.5 md:mt-3 h-[20px]" aria-hidden="true" />
+      ) : null}
     </div>
   )
 }

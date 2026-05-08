@@ -38,8 +38,6 @@ export interface ActiveDay {
   /** Threshold for this specific day, picked from the config. */
   minPoints: number
   config: GWDayConfig
-  /** Total days expected for the campaign (informational, not enforced). */
-  expectedDays: number
 }
 
 /**
@@ -89,10 +87,13 @@ function parisDateToUtc(year: number, month: number, day: number, hour: number):
  * return the active GW day descriptor.
  *
  * `now` defaults to the current instant. Pass a fixed Date for deterministic tests.
+ *
+ * Note: campaigns no longer carry an `expectedDays` cap — they run until the
+ * officer ends them, so this function simply tells you what day-type "today"
+ * is in the schedule.
  */
 export function getActiveGWDay(
   campaignStartIso: string,
-  expectedDays: number,
   now: Date = new Date(),
 ): ActiveDay {
   const start = new Date(campaignStartIso)
@@ -138,7 +139,6 @@ export function getActiveGWDay(
     dayType: config.type,
     minPoints,
     config,
-    expectedDays,
   }
 }
 
@@ -146,7 +146,6 @@ export function getActiveGWDay(
 export function getDayAtOffset(
   campaignStartIso: string,
   dayOffset: number,
-  expectedDays: number,
 ): Omit<ActiveDay, "dayStartIso" | "deadlineIso"> & {
   dayStartIso: string | null
   deadlineIso: string | null
@@ -174,8 +173,34 @@ export function getDayAtOffset(
     dayType: config.type,
     minPoints,
     config,
-    expectedDays,
   }
+}
+
+/**
+ * Build the Day-1 anchor ISO so that "today" lands on the picked day-type.
+ * Used by the campaign-start UI: officer says "today is Hegemony Day 2" and
+ * we back-solve the implicit Day-1 02:00 Paris anchor.
+ */
+export function anchorFromTodayDayType(
+  cycle: GWCycle,
+  dayInCycle: 1 | 2 | 3 | 4 | 5,
+  now: Date = new Date(),
+): string {
+  const ymd = getParisYMD(now)
+  // Today's 02:00 Paris boundary = today if h>=2 else yesterday.
+  let todayAnchor: Date
+  if (ymd.h >= ROLLOVER_HOUR_PARIS) {
+    todayAnchor = parisDateToUtc(ymd.y, ymd.m, ymd.d, ROLLOVER_HOUR_PARIS)
+  } else {
+    const earlier = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    const e = getParisYMD(earlier)
+    todayAnchor = parisDateToUtc(e.y, e.m, e.d, ROLLOVER_HOUR_PARIS)
+  }
+  const dayOffsetToday = (cycle === "war" ? 0 : 5) + (dayInCycle - 1)
+  const startUtc = new Date(
+    todayAnchor.getTime() - dayOffsetToday * 24 * 60 * 60 * 1000,
+  )
+  return startUtc.toISOString()
 }
 
 /**

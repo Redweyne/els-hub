@@ -45,14 +45,19 @@ export function GWPulseChart({ campaign, dailies, className }: GWPulseChartProps
   const scrollRef = useRef<HTMLDivElement>(null)
   const meta = campaign.meta_json
   const activeToday = useMemo(
-    () => getActiveGWDay(meta.start_date_iso, meta.expected_days),
-    [meta.start_date_iso, meta.expected_days],
+    () => getActiveGWDay(meta.start_date_iso),
+    [meta.start_date_iso],
   )
 
-  // Build the cell list once.
+  // Build the cell list. The campaign has no fixed length now — render
+  // every day from offset 0 up through today, plus a small forward window
+  // (next 5 days) so the officer can see what's next.
   const cells = useMemo(() => {
-    return Array.from({ length: meta.expected_days }).map((_, i) => {
-      const preview = getDayAtOffset(meta.start_date_iso, i, meta.expected_days)
+    const lastCompletedOffset = activeToday.dayOffset
+    const lookAhead = 5
+    const total = lastCompletedOffset + lookAhead + 1
+    return Array.from({ length: Math.max(10, total) }).map((_, i) => {
+      const preview = getDayAtOffset(meta.start_date_iso, i)
       const matching = dailies.find(
         (d) =>
           d.meta_json.cycle === preview.cycle &&
@@ -61,7 +66,7 @@ export function GWPulseChart({ campaign, dailies, className }: GWPulseChartProps
       )
       return { preview, daily: matching ?? null }
     })
-  }, [meta.start_date_iso, meta.expected_days, dailies])
+  }, [meta.start_date_iso, dailies, activeToday.dayOffset])
 
   // Auto-scroll today's cell into view on first render (mobile).
   useEffect(() => {
@@ -239,7 +244,7 @@ export function GWPulseChart({ campaign, dailies, className }: GWPulseChartProps
           Hegemony
         </span>
         <span className="ml-auto font-mono tabular-nums">
-          Day {activeToday.dayOffset + 1} / {meta.expected_days}
+          Day {activeToday.dayOffset + 1}
         </span>
       </div>
     </section>

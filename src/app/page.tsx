@@ -213,7 +213,13 @@ export default function Home() {
         .eq("status", "processing")
         .order("created_at", { ascending: false })
       const procRows = (allProcessing ?? []) as ProcessingEventRow[]
-      const campaign = procRows.find((e) => e.event_type_code === "gw_campaign") ?? null
+      const campaign =
+        procRows.find((e) => {
+          if (e.event_type_code !== "gw_campaign") return false
+          const meta = e.meta_json as (GWCampaignMeta & { ended_at_iso?: string | null }) | null
+          // Filter out campaigns that have been explicitly ended.
+          return !meta?.ended_at_iso
+        }) ?? null
       const recentProcessingCutoff = Date.now() - 3 * 60 * 60 * 1000
       const isRecentProcessing = (event: ProcessingEventRow) => {
         const stamp = event.updated_at || event.created_at
@@ -258,7 +264,7 @@ export default function Home() {
         setCampaignDailies(enriched)
 
         // Find today's daily (matches active super-cycle / cycle / day).
-        const activeDay = getActiveGWDay(meta.start_date_iso, meta.expected_days)
+        const activeDay = getActiveGWDay(meta.start_date_iso)
         const today = enriched.find(
           (d) =>
             d.meta_json.cycle === activeDay.cycle &&
@@ -591,7 +597,7 @@ export default function Home() {
               }
             />
 
-            <div className="space-y-10 md:space-y-14 mt-6 md:mt-10">
+            <div className="space-y-8 md:space-y-12 mt-5 md:mt-8">
               {/* ── WAR ROOM ───────────────────────────────────────────── */}
               {!isLoading && (
                 <Section from="up">
@@ -604,7 +610,7 @@ export default function Home() {
                 </Section>
               )}
 
-              {!isLoading && activeCampaign && campaignDailies.length >= 0 && (
+              {!isLoading && activeCampaign && (
                 <Section from="up">
                   <GWPulseChart
                     campaign={{
@@ -647,8 +653,10 @@ export default function Home() {
                 </Section>
               )}
 
-              {/* ── EXISTING SECTIONS ──────────────────────────────────── */}
-              {(activeEvent || isLoading) && !activeCampaign && (
+              {/* Active non-GW event card — only shown when no campaign hijacks the spotlight */}
+              {(activeEvent || isLoading) &&
+                !activeCampaign &&
+                activeEvent?.event_type_code !== "gw_campaign" && (
                 <ActiveEventCard
                   eventId={activeEvent?.id ?? null}
                   title={activeEvent?.title ?? null}

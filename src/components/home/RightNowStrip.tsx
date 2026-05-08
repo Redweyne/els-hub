@@ -74,7 +74,7 @@ export function RightNowStrip({
     if (!activeCampaign?.meta_json) return null
     const meta = activeCampaign.meta_json as GWCampaignMeta
     if (!meta.start_date_iso) return null
-    return getActiveGWDay(meta.start_date_iso, meta.expected_days, now)
+    return getActiveGWDay(meta.start_date_iso, now)
   }, [activeCampaign, now])
 
   const tiles: React.ReactNode[] = []
@@ -104,19 +104,41 @@ export function RightNowStrip({
         <Eyebrow tone="ember" size="sm">
           Right Now
         </Eyebrow>
-        <div className="mt-3 surface-3 rounded-xl border border-ash p-5 text-center">
-          <Radio
-            size={20}
-            className="text-bone/40 mx-auto mb-2"
-            aria-hidden="true"
-          />
-          <p className="text-bone/55 text-sm font-body">
-            No event is currently active.
-          </p>
-          <p className="text-[11px] text-bone/40 mt-1.5 font-body">
-            When a campaign or upload is in flight, it will glow here.
-          </p>
-        </div>
+        <Link
+          href="/tracking"
+          className={cn(
+            "mt-3 group block surface-3 rounded-xl border border-ash overflow-hidden",
+            "transition-all duration-200 active:scale-[0.99] hover:border-ember/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+          )}
+        >
+          <div className="relative px-4 py-4 md:px-5 md:py-5 flex items-center gap-4">
+            <div
+              aria-hidden="true"
+              className="aurora-orb-ember pointer-events-none"
+              style={{ top: "-30%", left: "10%", opacity: 0.45, width: 220, height: 220 }}
+            />
+            <div className="relative flex-shrink-0 w-12 h-12 rounded-xl bg-ink/70 border border-ember/30 flex items-center justify-center text-ember">
+              <Radio size={20} aria-hidden="true" />
+            </div>
+            <div className="relative flex-1 min-w-0">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-bone/55 font-body">
+                Faction · Idle
+              </p>
+              <p className="mt-0.5 font-display text-base md:text-lg font-semibold text-bone">
+                No event in flight
+              </p>
+              <p className="mt-0.5 text-[11px] text-bone/55 font-body">
+                Open Tracking to start a Governor&apos;s War or upload an event.
+              </p>
+            </div>
+            <ChevronRight
+              size={16}
+              className="relative text-bone/40 flex-shrink-0 group-hover:text-ember transition-colors"
+              aria-hidden="true"
+            />
+          </div>
+        </Link>
       </section>
     )
   }

@@ -3,11 +3,12 @@
 export const dynamic = "force-dynamic"
 
 import { useEffect, useMemo, useState } from "react"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion, useReducedMotion } from "framer-motion"
 import { Calendar, ChevronRight, Sword } from "lucide-react"
+import { apiPath } from "@/lib/paths"
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
@@ -29,7 +30,7 @@ import {
   type GWDailyMeta,
   type OakReportCard,
 } from "@/lib/events/config"
-import { getDayAtOffset } from "@/lib/gw/schedule"
+import { getActiveGWDay, getDayAtOffset } from "@/lib/gw/schedule"
 import { cn } from "@/lib/cn"
 
 interface EventScore {
@@ -78,6 +79,7 @@ const DEFAULT_THRESHOLD: Record<EventTypeCode, number> = {
 
 export default function EventPage() {
   const params = useParams<{ id: string }>()
+  const router = useRouter()
   const eventId = params.id
 
   const [event, setEvent] = useState<EventRow | null>(null)
@@ -85,8 +87,46 @@ export default function EventPage() {
   const [members, setMembers] = useState<Record<string, Member>>({})
   const [campaignDays, setCampaignDays] = useState<CampaignDay[]>([])
   const [priorRanks, setPriorRanks] = useState<Record<string, number>>({})
+  const [isOfficer, setIsOfficer] = useState(false)
+  const [isEnding, setIsEnding] = useState(false)
+  const [endError, setEndError] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState("")
+
+  const handleEndCampaign = async () => {
+    if (!eventId) return
+    if (!confirm("End this campaign? Daily uploads will keep their data; the campaign will move to the archive.")) {
+      return
+    }
+    setIsEnding(true)
+    setEndError("")
+    try {
+      const res = await fetch(apiPath(`/admin/campaigns/${eventId}/end`), {
+        method: "POST",
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? "Failed to end campaign")
+      // Hard refresh the page so server state is fresh.
+      router.refresh()
+      // Optimistic local update so the End button disappears immediately.
+      setEvent((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "published",
+              meta_json: {
+                ...(prev.meta_json ?? {}),
+                ended_at_iso: new Date().toISOString(),
+              },
+            }
+          : prev,
+      )
+    } catch (err) {
+      setEndError(err instanceof Error ? err.message : "Failed to end campaign")
+    } finally {
+      setIsEnding(false)
+    }
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -95,6 +135,26 @@ export default function EventPage() {
           process.env.NEXT_PUBLIC_SUPABASE_URL!,
           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
         )
+
+        // Officer flag — drives the End Campaign button visibility.
+        try {
+          const {
+            data: { user },
+          } = await supabase.auth.getUser()
+          if (user) {
+            const { data: prof } = await supabase
+              .from("profiles")
+              .select("platform_role")
+              .eq("auth_user_id", user.id)
+              .maybeSingle()
+            setIsOfficer(
+              prof?.platform_role === "officer" ||
+                prof?.platform_role === "owner",
+            )
+          }
+        } catch {
+          /* anonymous viewer is fine */
+        }
 
         const { data: ev, error: evErr } = await supabase
           .from("events")
@@ -235,9 +295,20 @@ export default function EventPage() {
           ) : eventCode === "gw_daily" ? (
             <GWDailyHeroBlock event={event} scores={scores} />
           ) : eventCode === "gw_campaign" ? (
-            <GWCampaignHero event={event} dailies={campaignDays} />
+            <GWCampaignHero
+              event={event}
+              dailies={campaignDays}
+              isOfficer={isOfficer}
+              onEnd={handleEndCampaign}
+              isEnding={isEnding}
+            />
           ) : (
             <FCUHero event={event} scores={scores} />
+          )}
+          {endError && (
+            <div className="rounded-lg bg-blood/10 border border-blood/30 p-3 text-xs text-blood-light">
+              {endError}
+            </div>
           )}
 
           {/* Leaderboard (everything except gw_campaign) */}
@@ -437,44 +508,96 @@ function GWDailyHeroBlock({
 function GWCampaignHero({
   event,
   dailies,
+  isOfficer,
+  onEnd,
+  isEnding,
 }: {
   event: EventRow
   dailies: CampaignDay[]
+  isOfficer: boolean
+  onEnd: () => void
+  isEnding: boolean
 }) {
   const meta = event.meta_json as
-    | { start_date_iso: string; expected_days: number }
+    | { start_date_iso: string; ended_at_iso?: string | null }
     | null
   const completed = dailies.length
-  const expected = meta?.expected_days ?? 50
-  const totalPoints = dailies.reduce(
-    (s, d) => s + (d.scoresTotal > 0 ? 1 : 0),
-    0,
-  )
+  const totalParticipations = dailies.reduce((s, d) => s + d.scoresTotal, 0)
+  const totalThresholdHits = dailies.reduce((s, d) => s + d.scoresHit, 0)
+  const ended = !!meta?.ended_at_iso || event.status === "published"
+  const startedAt = meta?.start_date_iso
+    ? new Date(meta.start_date_iso)
+    : new Date(event.created_at)
+  const startedLabel = startedAt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
+  const endedLabel = meta?.ended_at_iso
+    ? new Date(meta.ended_at_iso).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null
+
   return (
     <section className="space-y-4 pt-2">
       <div>
-        <Eyebrow tone="ember" size="sm">
-          Governor&apos;s War — Campaign
-        </Eyebrow>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Eyebrow tone="ember" size="sm">
+            Governor&apos;s War — Campaign
+          </Eyebrow>
+          <span
+            className={cn(
+              "text-[9px] font-mono font-bold uppercase tracking-[0.16em] px-1.5 py-0.5 rounded border",
+              ended
+                ? "bg-smoke/60 text-bone/60 border-ash"
+                : "bg-blood/15 text-blood-light border-blood/40",
+            )}
+          >
+            {ended ? "Ended" : "Active"}
+          </span>
+        </div>
         <h1 className="mt-1 font-display text-3xl md:text-4xl font-semibold text-bone tracking-[-0.01em]">
           {event.title}
         </h1>
         <p className="mt-1.5 text-bone/55 text-[12px] font-body">
-          {completed} day{completed === 1 ? "" : "s"} recorded · {expected}-day arc
+          Started {startedLabel}
+          {endedLabel ? ` · Ended ${endedLabel}` : ""}
         </p>
       </div>
       <div className="grid grid-cols-3 gap-2">
-        <FactStat label="Logged" value={completed} format="raw" />
-        <FactStat label="Expected" value={expected} format="raw" tone="muted" />
+        <FactStat label="Days logged" value={completed} format="raw" />
         <FactStat
-          label="Coverage"
-          value={expected > 0 ? Math.round((completed / expected) * 100) : 0}
-          format="percentage"
+          label="Participations"
+          value={totalParticipations}
+          format="compact"
+          tone="muted"
+        />
+        <FactStat
+          label="Threshold clears"
+          value={totalThresholdHits}
+          format="compact"
           tone="ember"
         />
       </div>
-      {/* Suppress unused-var hint */}
-      <span className="hidden">{totalPoints}</span>
+      {/* End Campaign button — officer-only, only while active */}
+      {isOfficer && !ended && (
+        <button
+          type="button"
+          onClick={onEnd}
+          disabled={isEnding}
+          className={cn(
+            "w-full min-h-[48px] rounded-xl border text-sm font-bold uppercase tracking-[0.16em]",
+            "bg-blood/15 hover:bg-blood/25 active:scale-[0.98] transition-all duration-150",
+            "border-blood/40 text-blood-light",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+          )}
+        >
+          {isEnding ? "Ending…" : "End Campaign"}
+        </button>
+      )}
     </section>
   )
 }
@@ -682,13 +805,24 @@ function CampaignDailiesList({
   dailies: CampaignDay[]
 }) {
   const meta = event.meta_json as
-    | { start_date_iso: string; expected_days: number }
+    | { start_date_iso: string; ended_at_iso?: string | null }
     | null
   if (!meta) return null
 
-  // Build a 50-cell preview, marking which are completed.
-  const cells = Array.from({ length: meta.expected_days }).map((_, i) => {
-    const preview = getDayAtOffset(meta.start_date_iso, i, meta.expected_days)
+  // Render every day from offset 0 → today + a small forward window so the
+  // officer always sees what's next. Length is dynamic — campaigns no longer
+  // have a fixed cap.
+  const todayActive = (() => {
+    try {
+      const a = getActiveGWDay(meta.start_date_iso)
+      return a.dayOffset
+    } catch {
+      return dailies.length
+    }
+  })()
+  const totalCells = Math.max(10, todayActive + 6, dailies.length + 3)
+  const cells = Array.from({ length: totalCells }).map((_, i) => {
+    const preview = getDayAtOffset(meta.start_date_iso, i)
     const matching = dailies.find(
       (d) =>
         d.meta_json.day_in_cycle === preview.dayInCycle &&
@@ -795,7 +929,14 @@ function CampaignDailiesList({
         })}
       </ul>
       <div className="pt-4">
-        <OrnateDivider variant="fleur" label={meta.expected_days + "-day arc"} />
+        <OrnateDivider
+          variant="fleur"
+          label={
+            meta.ended_at_iso
+              ? "Campaign ended"
+              : `${dailies.length} day${dailies.length === 1 ? "" : "s"} logged`
+          }
+        />
       </div>
     </section>
   )

@@ -63,7 +63,7 @@ interface ActiveCampaign {
 }
 
 const TYPE_PLACEHOLDERS: Record<EventTypeCode, string> = {
-  fcu: "FCU — Week of May 1",
+  fcu: "FCU — May 1",
   oak: "Glory of Oakvale — May 4",
   gw_daily: "Auto-filled from active campaign",
   gw_campaign: "—",
@@ -211,16 +211,19 @@ function UploadEventInner() {
           setActiveCampaign(null)
           return
         }
+        const meta = data.meta_json as GWCampaignMeta
+        // Skip campaigns that have been explicitly ended.
+        if (meta.ended_at_iso) {
+          setActiveCampaign(null)
+          return
+        }
         const camp: ActiveCampaign = {
           id: data.id,
           title: data.title,
-          meta_json: data.meta_json as GWCampaignMeta,
+          meta_json: meta,
         }
         setActiveCampaign(camp)
-        const active = getActiveGWDay(
-          camp.meta_json.start_date_iso,
-          camp.meta_json.expected_days,
-        )
+        const active = getActiveGWDay(camp.meta_json.start_date_iso)
         setGwCycle(active.cycle)
         setGwDayType(active.dayType)
         setGwSuperCycle(active.superCycle)
@@ -238,11 +241,7 @@ function UploadEventInner() {
 
   const activeDayPreview = useMemo(() => {
     if (!activeCampaign) return null
-    const active = getActiveGWDay(
-      activeCampaign.meta_json.start_date_iso,
-      activeCampaign.meta_json.expected_days,
-      now,
-    )
+    const active = getActiveGWDay(activeCampaign.meta_json.start_date_iso, now)
     return { active, format: formatActiveDay(active, now) }
   }, [activeCampaign, now])
 
