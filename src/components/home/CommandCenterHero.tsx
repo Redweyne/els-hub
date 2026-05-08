@@ -11,7 +11,7 @@ import { ELSEmblemV2, RankStarsRow } from "@/components/heraldry"
 import { Eyebrow, DisplayHeading, Numeric } from "@/components/typography"
 import { ParticleField } from "@/components/motion/ParticleField"
 import { Shimmer } from "@/components/motion/Shimmer"
-import { SparkLine, TrendArc } from "@/components/dataviz"
+import { TrendArc } from "@/components/dataviz"
 import { cn } from "@/lib/cn"
 
 export interface CommandCenterHeroProps {
@@ -22,18 +22,14 @@ export interface CommandCenterHeroProps {
   factionClass?: string
   isLoading?: boolean
   /**
-   * Recent member-count series (oldest → newest). Renders a sparkline
-   * beneath the Members tile.
-   */
-  memberCountSeries?: ReadonlyArray<number>
-  /** Recent influence series (oldest → newest). */
-  influenceSeries?: ReadonlyArray<number>
-  /** Recent faction placement series (lower is better). */
-  placementSeries?: ReadonlyArray<number>
-  /**
-   * "Pulse" series — values driving the breathing TrendArc behind the hero.
-   * Pass faction-wide event counts per day (last 14 days), or any signal
-   * that conveys "intensity". When omitted the arc is suppressed.
+   * "Pulse" series — events-per-day count for the last 14 days. This is the
+   * ONLY cross-type aggregate the hero uses, because it's a count of
+   * activity (not a sum of points or ranks). It drives the breathing
+   * TrendArc behind the hero. Omit to suppress.
+   *
+   * Cross-type point sums and rank trends were intentionally removed — they
+   * mixed FCU thousands with GW Massacre tens-of-millions, producing
+   * meaningless charts. Type-clean trends live in <FactionTypeSnapshot />.
    */
   pulseSeries?: ReadonlyArray<number>
   /** Override pulse color (defaults to ember). Pass blood-light for war-mode. */
@@ -49,9 +45,6 @@ export function CommandCenterHero({
   server = 78,
   factionClass = "S",
   isLoading = false,
-  memberCountSeries,
-  influenceSeries,
-  placementSeries,
   pulseSeries,
   pulseColor = "var(--ember)",
 }: CommandCenterHeroProps) {
@@ -196,8 +189,6 @@ export function CommandCenterHero({
                     className="text-ember"
                   />
                 }
-                series={memberCountSeries}
-                seriesColor="var(--ember)"
               />
               <StatCard
                 label="Influence"
@@ -210,17 +201,12 @@ export function CommandCenterHero({
                     className="text-ember"
                   />
                 }
-                series={influenceSeries}
-                seriesColor="var(--ember)"
               />
               <StatCard
                 label="Standing"
                 isLoading={isLoading}
                 valueClass="text-ember"
                 value={factionPlacement ?? "—"}
-                series={placementSeries}
-                seriesInverted
-                seriesColor="var(--ember-light)"
               />
             </motion.div>
           </div>
@@ -236,10 +222,6 @@ interface StatCardProps {
   value: ReactNode
   valueClass?: string
   isLoading?: boolean
-  series?: ReadonlyArray<number>
-  seriesColor?: string
-  /** Pass true if a smaller series value = "better" (e.g. faction placement). */
-  seriesInverted?: boolean
 }
 
 function StatCard({
@@ -247,11 +229,7 @@ function StatCard({
   value,
   valueClass,
   isLoading,
-  series,
-  seriesColor,
-  seriesInverted,
 }: StatCardProps) {
-  const hasSeries = !!series && series.length >= 2
   return (
     <div
       className={cn(
@@ -273,22 +251,8 @@ function StatCard({
       >
         {isLoading ? <Shimmer className="h-5 w-14 mt-0.5" /> : value}
       </div>
-      {hasSeries && !isLoading ? (
-        <div className="mt-2.5 md:mt-3">
-          <SparkLine
-            data={series}
-            width={84}
-            height={20}
-            color={seriesColor ?? "var(--ember)"}
-            inverted={!!seriesInverted}
-            fill
-            showLastDot
-            label={`${label} trend`}
-            className="w-full opacity-95"
-          />
-        </div>
-      ) : !isLoading ? (
-        // Reserve consistent vertical space when there's no series yet
+      {!isLoading ? (
+        // Reserve consistent vertical space so cards don't jiggle as data loads
         <div className="mt-2.5 md:mt-3 h-[20px]" aria-hidden="true" />
       ) : null}
     </div>

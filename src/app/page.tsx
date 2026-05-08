@@ -20,9 +20,10 @@ import {
   GWPulseChart,
   ActivityFeed,
   MixedEventTimeline,
-  FactionHeartbeat,
   TopMovers,
 } from "@/components/home"
+import { FactionTypeSnapshot } from "@/components/home/FactionTypeSnapshot"
+import type { FactionTypeSnapshotEvent } from "@/components/home/FactionTypeSnapshot"
 import type { PodiumPerformer, HonorEntry } from "@/components/home"
 import type {
   EventTypeCode,
@@ -101,16 +102,25 @@ export default function Home() {
   } | null>(null)
   const [campaignDailies, setCampaignDailies] = useState<CampaignDaily[]>([])
 
-  // Hero series + heartbeat + movers state
-  const [influenceSeries, setInfluenceSeries] = useState<number[]>([])
-  const [placementSeries, setPlacementSeries] = useState<number[]>([])
+  /**
+   * `pulseSeries` = raw event-count per day for the last 14 days.
+   * Type-agnostic and meaningful (just "did stuff happen?"). All other
+   * cross-type aggregates have been removed because mixing FCU points
+   * (~thousands), Oak points (~hundreds of thousands) and GW points
+   * (millions, with Massacre 40M) produces meaningless charts.
+   */
   const [pulseSeries, setPulseSeries] = useState<number[]>([])
-  const [heartbeatRecent, setHeartbeatRecent] = useState<
-    Array<{ at: string; avgRank: number; totalPoints?: number; title: string }>
-  >([])
-  const [heartbeatPlacements, setHeartbeatPlacements] = useState<
-    Array<{ placement: number; count: number }>
-  >([])
+
+  /**
+   * Per-event-type faction snapshot data — three independent buckets, each
+   * one a list of events of that type only. Charts inside FactionTypeSnapshot
+   * never cross the type boundary.
+   */
+  const [snapshotByType, setSnapshotByType] = useState<{
+    fcu: FactionTypeSnapshotEvent[]
+    oak: FactionTypeSnapshotEvent[]
+    gw_daily: FactionTypeSnapshotEvent[]
+  }>({ fcu: [], oak: [], gw_daily: [] })
   const [risers, setRisers] = useState<
     Array<{
       memberId: string
@@ -129,6 +139,8 @@ export default function Home() {
       recentRanks: number[]
     }>
   >([])
+  /** Event-type code that the mover comparison is anchored to. */
+  const [moversTypeCode, setMoversTypeCode] = useState<string | null>(null)
 
   useEffect(() => {
     const introShown = sessionStorage.getItem("introShownThisSession")
@@ -300,43 +312,23 @@ export default function Home() {
         setTodayProgress(null)
       }
 
-      // ── Heartbeat / hero series / top movers (parallel single fetch).
+      // ── Recent events feed (per-type snapshot + top movers + pulse).
       const { data: recentEvents12 } = await supabase
         .from("events")
         .select(
-          "id, title, created_at, event_type_code, faction_result_json",
+          "id, title, created_at, event_type_code, meta_json, faction_result_json",
         )
         .eq("status", "published")
         .order("created_at", { ascending: false })
-        .limit(12)
+        .limit(20)
       const evs = (recentEvents12 ?? []) as Array<{
         id: string
         title: string
         created_at: string
         event_type_code: string | null
+        meta_json: { min_points?: number } | null
         faction_result_json: { placement?: number } | null
       }>
-
-      // Hero placement series — oldest → newest, last up to 8 events.
-      const placementsOldFirst = [...evs]
-        .reverse()
-        .map((e) => e.faction_result_json?.placement ?? null)
-        .filter((p): p is number => p != null)
-      setPlacementSeries(placementsOldFirst.slice(-8))
-
-      // Heartbeat placement bucket counts (gold/silver/bronze/other).
-      const buckets = new Map<number, number>()
-      for (const e of evs) {
-        const p = e.faction_result_json?.placement
-        if (p == null) continue
-        const slot = p <= 3 ? p : 4
-        buckets.set(slot, (buckets.get(slot) ?? 0) + 1)
-      }
-      setHeartbeatPlacements(
-        Array.from(buckets.entries())
-          .map(([placement, count]) => ({ placement, count }))
-          .sort((a, b) => a.placement - b.placement),
-      )
 
       if (evs.length > 0) {
         const eventIds = evs.map((e) => e.id)
@@ -363,30 +355,49 @@ export default function Home() {
           scoresByEvent.set(s.event_id, list)
         }
 
-        // Heartbeat trajectory: avg rank per event, oldest → newest.
-        const trajectory: Array<{
-          at: string
-          avgRank: number
-          totalPoints?: number
-          title: string
-        }> = []
-        const influenceTrend: number[] = []
+        // ── Faction snapshot, per event type. We compute these inside their
+        // own type universe — never mix FCU / Oak / GW points or ranks in a
+        // single chart. Each bucket is oldest → newest, capped at the most
+        // recent 8 events of that type.
+        const snapshot: Record<
+          "fcu" | "oak" | "gw_daily",
+          FactionTypeSnapshotEvent[]
+        > = { fcu: [], oak: [], gw_daily: [] }
+        const codeBucket = (raw: string | null): "fcu" | "oak" | "gw_daily" | null => {
+          if (raw === "fcu") return "fcu"
+          if (raw === "oak" || raw === "goa" || raw === "sgoa") return "oak"
+          if (raw === "gw_daily" || raw === "gw-sl" || raw === "gw-fh") return "gw_daily"
+          return null
+        }
         for (const e of [...evs].reverse()) {
+          const bucket = codeBucket(e.event_type_code)
+          if (!bucket) continue
           const list = scoresByEvent.get(e.id) ?? []
           if (list.length === 0) continue
-          const avgRank =
+          const factionAvgRank =
             list.reduce((s, x) => s + x.rank_value, 0) / list.length
-          const totalPoints = list.reduce((s, x) => s + x.points, 0)
-          trajectory.push({
-            at: e.created_at,
-            avgRank,
-            totalPoints,
+          const minPoints = (e.meta_json as { min_points?: number } | null)
+            ?.min_points
+          const thresholdHits =
+            minPoints != null
+              ? list.filter((x) => x.points >= minPoints).length
+              : null
+          snapshot[bucket].push({
+            id: e.id,
             title: e.title,
+            createdAt: e.created_at,
+            factionAvgRank,
+            placement: e.faction_result_json?.placement ?? null,
+            thresholdHits,
+            thresholdTotal: minPoints != null ? list.length : null,
           })
-          influenceTrend.push(totalPoints)
         }
-        setHeartbeatRecent(trajectory)
-        setInfluenceSeries(influenceTrend.slice(-8))
+        // Cap to the most recent 8 of each type for tight sparklines.
+        setSnapshotByType({
+          fcu: snapshot.fcu.slice(-8),
+          oak: snapshot.oak.slice(-8),
+          gw_daily: snapshot.gw_daily.slice(-8),
+        })
 
         // Pulse series — events per day in the last 14 days.
         const dayBucket = new Map<string, number>()
@@ -401,7 +412,10 @@ export default function Home() {
         }
         setPulseSeries(Array.from(dayBucket.values()))
 
-        // Top movers: most recent event vs prior of same type.
+        // Top movers: most recent event vs the prior event OF THE SAME TYPE.
+        // The mover sparkline now slices recent ranks to the same type only
+        // — so an FCU mover's chart shows only their last FCU ranks, never
+        // a meaningless FCU-vs-GW-Massacre line.
         if (evs.length >= 2) {
           const latest = evs[0]
           const prior = evs.find(
@@ -413,9 +427,13 @@ export default function Home() {
             for (const s of scoresByEvent.get(prior.id) ?? []) {
               priorMap.set(s.member_id, s.rank_value)
             }
-            // Build per-member rank history (last 6 of any type) for sparklines.
+            // Build per-member rank history filtered to the latest event's
+            // type only — keeps the sparkline meaningful.
             const recentByMember = new Map<string, number[]>()
-            for (const e of [...evs].reverse()) {
+            const sameTypeEvs = evs.filter(
+              (e) => e.event_type_code === latest.event_type_code,
+            )
+            for (const e of [...sameTypeEvs].reverse()) {
               for (const s of scoresByEvent.get(e.id) ?? []) {
                 const arr = recentByMember.get(s.member_id) ?? []
                 arr.push(s.rank_value)
@@ -453,6 +471,7 @@ export default function Home() {
               .slice(0, 3)
             setRisers(risersList)
             setFallers(fallersList)
+            setMoversTypeCode(latest.event_type_code)
           }
         }
 
@@ -589,8 +608,6 @@ export default function Home() {
               server={78}
               factionClass="S"
               isLoading={isLoading}
-              influenceSeries={influenceSeries}
-              placementSeries={placementSeries}
               pulseSeries={pulseSeries}
               pulseColor={
                 activeCampaign ? "var(--blood-light)" : "var(--ember)"
@@ -630,20 +647,20 @@ export default function Home() {
 
               {!isLoading && (risers.length > 0 || fallers.length > 0) && (
                 <Section from="up">
-                  <TopMovers risers={risers} fallers={fallers} />
+                  <TopMovers
+                    risers={risers}
+                    fallers={fallers}
+                    typeCode={moversTypeCode}
+                  />
                 </Section>
               )}
 
-              {!isLoading && heartbeatRecent.length >= 2 && (
+              {!isLoading &&
+                (snapshotByType.fcu.length > 0 ||
+                  snapshotByType.oak.length > 0 ||
+                  snapshotByType.gw_daily.length > 0) && (
                 <Section from="up">
-                  <FactionHeartbeat
-                    recentEvents={heartbeatRecent}
-                    influenceWeeks={heartbeatRecent.map((e) => ({
-                      at: e.at,
-                      influence: e.totalPoints ?? 0,
-                    }))}
-                    placementBuckets={heartbeatPlacements}
-                  />
+                  <FactionTypeSnapshot byType={snapshotByType} />
                 </Section>
               )}
 

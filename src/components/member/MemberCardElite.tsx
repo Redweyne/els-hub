@@ -6,6 +6,7 @@ import { Numeric } from "@/components/typography"
 import { MemberAvatar } from "./MemberAvatar"
 import { useLongPressPeek } from "./MemberPeek"
 import { SparkLine, DeltaArrow } from "@/components/dataviz"
+import { getEventConfig } from "@/lib/events/config"
 import { cn } from "@/lib/cn"
 
 export type RankTier =
@@ -31,10 +32,17 @@ export interface MemberCardEliteProps {
   vipLevel?: number | null
   titles?: string[]
   /**
-   * Last N event ranks (oldest → newest). Renders an inline sparkline
-   * to the right of the influence value. Omit if no event history.
+   * Last N event ranks (oldest → newest) of the SAME event type as the most
+   * recent event. We never mix types here — a sparkline that combines FCU
+   * and GW Massacre ranks is misleading.
    */
   recentRanks?: ReadonlyArray<number | null>
+  /**
+   * The event-type code that `recentRanks` belongs to. Drives the sparkline
+   * color and the small label ("FCU" / "Oak" / "GW") so viewers know what
+   * kind of recent performance they're seeing.
+   */
+  recentTypeCode?: string | null
   /**
    * Most recent rank delta (latest event compared to prior of same type).
    * Positive number = rank improved (lower number).
@@ -92,6 +100,7 @@ export function MemberCardElite({
   influence,
   vipLevel,
   recentRanks,
+  recentTypeCode,
   rankDelta,
   active = false,
   delay = 0,
@@ -101,7 +110,18 @@ export function MemberCardElite({
   const cfg = TIER_CONFIG[tier] ?? TIER_CONFIG.frontliner
   const hasSparkData =
     !!recentRanks && recentRanks.filter((r) => r != null).length >= 2
-  const sparkColor = cfg.sparkColor
+  // Sparkline color follows the event-type accent (so the FCU sparkline
+  // reads blood-red, Oak reads ember, GW reads blood-light) — keeps the
+  // type universe identifiable at a glance even at 48px wide.
+  const eventCfg = recentTypeCode ? getEventConfig(recentTypeCode) : null
+  const sparkColor =
+    eventCfg?.accent === "ember"
+      ? "var(--ember)"
+      : eventCfg?.accent === "blood"
+        ? "var(--blood-light)"
+        : eventCfg?.accent === "blood-light"
+          ? "var(--blood-light)"
+          : cfg.sparkColor
   const peekHandlers = useLongPressPeek(id, name, tier)
 
   return (
@@ -180,17 +200,31 @@ export function MemberCardElite({
 
           <div className="flex-shrink-0 flex items-center gap-2.5">
             {hasSparkData && (
-              <SparkLine
-                data={recentRanks!}
-                width={48}
-                height={18}
-                color={sparkColor}
-                inverted
-                showLastDot
-                fill
-                label={`${name} recent ranks`}
-                className="opacity-90"
-              />
+              <div className="flex flex-col items-end gap-0.5 leading-none">
+                <SparkLine
+                  data={recentRanks!}
+                  width={48}
+                  height={18}
+                  color={sparkColor}
+                  inverted
+                  showLastDot
+                  fill
+                  label={`${name} recent ${eventCfg?.abbrev ?? ""} ranks`}
+                  className="opacity-95"
+                />
+                {eventCfg && (
+                  <span
+                    className={cn(
+                      "text-[8px] font-mono font-bold uppercase tracking-[0.14em]",
+                      eventCfg.accent === "ember"
+                        ? "text-ember/85"
+                        : "text-blood-light/85",
+                    )}
+                  >
+                    last {eventCfg.abbrev}
+                  </span>
+                )}
+              </div>
             )}
             <div className="text-right min-w-[3.5rem]">
               {influence != null && influence > 0 ? (

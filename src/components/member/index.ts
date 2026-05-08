@@ -19,3 +19,9 @@ export {
   useMemberPeek,
   useLongPressPeek,
 } from "./MemberPeek"
+
+export { PerformanceByType } from "./PerformanceByType"
+export type {
+  PerformanceByTypeProps,
+  PerformanceScore,
+} from "./PerformanceByType"

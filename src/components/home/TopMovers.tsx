@@ -6,6 +6,7 @@ import { ArrowDownRight, ArrowUpRight } from "lucide-react"
 import { Eyebrow } from "@/components/typography"
 import { MemberAvatar } from "@/components/member"
 import { SparkLine, DeltaArrow } from "@/components/dataviz"
+import { getEventConfig } from "@/lib/events/config"
 import { cn } from "@/lib/cn"
 
 export interface MoverRow {
@@ -23,6 +24,12 @@ export interface TopMoversProps {
   risers: ReadonlyArray<MoverRow>
   /** Members whose rank dropped most. */
   fallers: ReadonlyArray<MoverRow>
+  /**
+   * The event-type the rank comparison is anchored to. Drives the section
+   * subtitle so users know "this mover list is for FCU specifically", not
+   * a meaningless mix of FCU + GW Massacre rankings.
+   */
+  typeCode?: string | null
   className?: string
 }
 
@@ -37,11 +44,15 @@ export interface TopMoversProps {
 export function TopMovers({
   risers,
   fallers,
+  typeCode,
   className,
 }: TopMoversProps) {
   const reducedMotion = useReducedMotion()
 
   if (risers.length === 0 && fallers.length === 0) return null
+
+  const cfg = typeCode ? getEventConfig(typeCode) : null
+  const typeLabel = cfg?.abbrev ?? "Event"
 
   return (
     <section
@@ -49,11 +60,18 @@ export function TopMovers({
       aria-label="Top movers"
     >
       <div className="flex items-end justify-between mb-3">
-        <Eyebrow tone="ember" size="sm">
-          Top Movers
-        </Eyebrow>
+        <div>
+          <Eyebrow tone="ember" size="sm">
+            Top Movers
+          </Eyebrow>
+          {cfg && (
+            <p className="mt-0.5 text-[11px] text-bone/55 font-body">
+              {cfg.label} · vs prior {typeLabel}
+            </p>
+          )}
+        </div>
         <span className="text-[10px] uppercase tracking-[0.18em] text-bone/45 font-body">
-          since last event
+          {typeLabel} only
         </span>
       </div>
 

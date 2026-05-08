@@ -23,6 +23,7 @@ import { NetworkError } from "@/components/ui/network-error"
 import { deriveAchievements } from "@/lib/achievements"
 import { deriveMomentum } from "@/lib/intelligence/momentum"
 import { classifyAnomaly, formatAnomaly } from "@/lib/intelligence/anomalies"
+import { PerformanceByType } from "@/components/member"
 import {
   getEventConfig,
   type EventTypeCode,
@@ -193,12 +194,10 @@ export default function MemberProfilePage() {
   }
 
   const tier = TIER_META[member.rank_tier] ?? TIER_META.frontliner
-  const bestRank =
-    scores.length > 0 ? Math.min(...scores.map((s) => s.rank_value)) : null
-  const avgPoints =
-    scores.length > 0
-      ? scores.reduce((sum, s) => sum + s.points, 0) / scores.length
-      : 0
+  // NOTE: We deliberately don't compute aggregate "best rank" or "avg points"
+  // across event types — points and ranks live in non-comparable scales per
+  // type (FCU thousands, Oak hundreds-of-thousands, GW Massacre tens-of-millions).
+  // Per-type stats live inside <PerformanceByType /> below.
   const initial = member.canonical_name.trim()[0]?.toUpperCase() ?? "?"
 
   const enrichedScores = scores.map((s) => {
@@ -391,39 +390,31 @@ export default function MemberProfilePage() {
 
         <div className="relative px-5 md:px-8 max-w-xl mx-auto mt-6 md:mt-8 space-y-10 md:space-y-12">
           <Section from="up" immediate>
-            <div className="grid grid-cols-3 gap-2 md:gap-3">
-              <StatTile
-                label="Events"
-                value={
-                  <Numeric
-                    value={scores.length}
-                    format="raw"
-                    className="text-bone"
-                  />
-                }
-              />
-              <StatTile
-                label="Best Rank"
-                value={
-                  bestRank ? (
-                    <span className="text-ember">#{bestRank}</span>
-                  ) : (
-                    <span className="text-bone/40">—</span>
-                  )
-                }
-                highlight={bestRank !== null && bestRank <= 3}
-              />
-              <StatTile
-                label="Avg Points"
-                value={
-                  <Numeric
-                    value={avgPoints}
-                    format="compact"
-                    className="text-bone"
-                  />
-                }
-              />
-            </div>
+            {/*
+              Per-Type Performance — three independent cards (FCU / Oak / GW),
+              each computed from its own type's data only. Points and ranks
+              never cross type boundaries. Cards with no data render an
+              empty state instead of a misleading aggregate.
+            */}
+            <PerformanceByType
+              scores={enrichedScores.map((s) => ({
+                eventId: s.eventId,
+                rank: s.rank,
+                points: s.points,
+                createdAt: s.createdAt,
+                eventTypeCode: s.eventTypeCode,
+                gw: s.gwMeta
+                  ? {
+                      cycle: s.gwMeta.cycle,
+                      day_in_cycle: s.gwMeta.day_in_cycle,
+                      day_type: s.gwMeta.day_type,
+                      min_points: s.gwMeta.min_points,
+                    }
+                  : null,
+                oakPlacement: s.oakPlacement,
+                oakBestOf: s.oakBestOf,
+              }))}
+            />
 
             {(member.influence || member.vip_level) && (
               <div className="mt-4 surface-3 rounded-xl p-4 border border-ash">
@@ -473,11 +464,9 @@ export default function MemberProfilePage() {
             </Section>
           )}
 
-          {scores.length >= 3 && (
-            <Section from="up">
-              <RankTrajectory scores={scores.slice(0, 8)} />
-            </Section>
-          )}
+          {/* Legacy mixed-type RankTrajectory removed — per-type sparklines
+              now live inside <PerformanceByType /> above. Mixing FCU rank
+              with GW Massacre rank in one chart was misleading. */}
 
           {(() => {
             // Build the Day-Type Mastery grid from GW Daily scores.

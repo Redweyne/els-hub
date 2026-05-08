@@ -26,8 +26,15 @@ interface Member {
 }
 
 interface MemberStats {
-  /** Last N event ranks, oldest → newest. Up to 6. */
+  /**
+   * Most-recent-event-type ranks, oldest → newest, capped at the last 6
+   * scores of THAT type only. Mixing FCU rank with GW Massacre rank in a
+   * single sparkline is misleading — every dot in the chart now belongs
+   * to the same kind of event.
+   */
   recentRanks: number[]
+  /** Event-type code that the sparkline + delta describe. */
+  recentTypeCode: string | null
   /** Most recent delta vs prior event of same type. Negative = improved. */
   rankDelta: number | null
   /** True if any event_score in last 7 days. */
@@ -112,7 +119,12 @@ export default function MembersPage() {
       const stats: Record<string, MemberStats> = {}
       const now = Date.now()
       for (const m of list) {
-        stats[m.id] = { recentRanks: [], rankDelta: null, active: false }
+        stats[m.id] = {
+          recentRanks: [],
+          recentTypeCode: null,
+          rankDelta: null,
+          active: false,
+        }
       }
       const scoresByMember = new Map<
         string,
@@ -140,25 +152,36 @@ export default function MembersPage() {
       }
       for (const [memberId, raw] of scoresByMember) {
         // Already sorted newest-first from the query.
-        const newestSix = raw.slice(0, 6)
+        // Sparkline + delta must live inside ONE event type — mixing
+        // FCU and GW Massacre on a single rank line is meaningless. Pick
+        // the most recent event's type and slice down to that type only.
+        const latest = raw[0]
+        const recentTypeCode = latest?.type_code ?? null
+        const sameTypeNewestSix = recentTypeCode
+          ? raw.filter((r) => r.type_code === recentTypeCode).slice(0, 6)
+          : []
         // Sparkline wants oldest → newest
-        const recentRanks = newestSix
+        const recentRanks = sameTypeNewestSix
           .map((r) => r.rank_value)
           .reverse()
-        // Recent delta vs prior event of the same type.
         let rankDelta: number | null = null
-        if (newestSix.length > 0) {
-          const latest = newestSix[0]
-          const prior = newestSix.find(
-            (r, i) => i > 0 && r.type_code === latest.type_code,
-          )
-          if (prior) rankDelta = prior.rank_value - latest.rank_value
+        if (sameTypeNewestSix.length >= 2) {
+          rankDelta =
+            sameTypeNewestSix[1].rank_value - sameTypeNewestSix[0].rank_value
         }
-        // Active in last 7 days?
-        const active = newestSix.some(
-          (r) => now - new Date(r.created_at).getTime() < ACTIVITY_WINDOW_MS,
-        )
-        stats[memberId] = { recentRanks, rankDelta, active }
+        // "Active" looks across all types — any event in the last 7 days
+        // counts. This is just an activity flag, not a comparison.
+        const active = raw
+          .slice(0, 6)
+          .some(
+            (r) => now - new Date(r.created_at).getTime() < ACTIVITY_WINDOW_MS,
+          )
+        stats[memberId] = {
+          recentRanks,
+          recentTypeCode,
+          rankDelta,
+          active,
+        }
       }
       setMemberStats(stats)
     } catch (err) {
@@ -355,6 +378,7 @@ export default function MembersPage() {
                             influence={member.influence}
                             vipLevel={member.vip_level}
                             recentRanks={stats?.recentRanks}
+                            recentTypeCode={stats?.recentTypeCode ?? null}
                             rankDelta={stats?.rankDelta ?? null}
                             active={stats?.active ?? false}
                             delay={Math.min(idx * 0.025, 0.3)}
