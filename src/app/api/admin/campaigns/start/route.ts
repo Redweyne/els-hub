@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
+import { ensureEventTypes } from "@/lib/events/seed"
 
 /**
  * Start a Governor's War campaign.
@@ -80,6 +81,19 @@ export async function POST(req: NextRequest) {
     }
     if (!["owner", "officer"].includes(profile.platform_role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+
+    // Self-heal: ensure every event_type code the app uses exists in the
+    // event_types table BEFORE we insert into events. Without this, the FK
+    // constraint events.event_type_code → event_types.code rejects the
+    // insert when a deployment is ahead of any unrun SQL migration.
+    const seed = await ensureEventTypes(admin)
+    if (!seed.ok) {
+      console.error("[campaigns/start] event_types seed error:", seed.error)
+      return NextResponse.json(
+        { error: `Failed to ensure event_types: ${seed.error}` },
+        { status: 500 },
+      )
     }
 
     // Compute the implicit Day-1 anchor (02:00 Paris) such that today's

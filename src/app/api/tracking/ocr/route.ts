@@ -19,6 +19,7 @@ import {
   sanitizeOcrJson,
   type OcrPayload,
 } from "@/lib/events/ocr-prompts"
+import { ensureEventTypes } from "@/lib/events/seed"
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
@@ -176,6 +177,21 @@ export async function POST(req: NextRequest) {
           console.log(`[FCU-OCR] Reusing event ${eventId} (cleared old scores + queue)`)
           sendProgress(encoder, controller, { type: "event_reused", eventId })
         } else {
+          // Self-heal: ensure the event_type code exists before inserting.
+          // Without this, the FK constraint events.event_type_code → event_types.code
+          // can reject the insert in environments where the SQL migration hasn't
+          // been applied yet.
+          const seed = await ensureEventTypes(adminClient)
+          if (!seed.ok) {
+            console.error("[FCU-OCR] event_types seed error:", seed.error)
+            sendProgress(encoder, controller, {
+              type: "error",
+              message: `Failed to ensure event_types: ${seed.error}`,
+            })
+            controller.close()
+            return
+          }
+
           // Create new event record
           const newEventRow: Record<string, unknown> = {
             faction_id: factionId,

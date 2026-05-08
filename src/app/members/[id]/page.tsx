@@ -21,6 +21,8 @@ import { Shimmer } from "@/components/motion/Shimmer"
 import { Section, Stagger, StaggerItem } from "@/components/motion/Section"
 import { NetworkError } from "@/components/ui/network-error"
 import { deriveAchievements } from "@/lib/achievements"
+import { deriveMomentum } from "@/lib/intelligence/momentum"
+import { classifyAnomaly, formatAnomaly } from "@/lib/intelligence/anomalies"
 import {
   getEventConfig,
   type EventTypeCode,
@@ -229,6 +231,39 @@ export default function MemberProfilePage() {
   // GW streak: count consecutive most-recent GW dailies (any threshold) participated.
   const gwStreak = computeGWStreak(enrichedScores)
 
+  // Momentum — a single short opinionated sentence like "Trending up · best 3 of 5".
+  const momentum = deriveMomentum(
+    enrichedScores.map((s) => ({ rank: s.rank, createdAt: s.createdAt })),
+  )
+
+  /**
+   * Anomaly map per score id. Each score is judged against the member's own
+   * history of the same event type. We compute once here so every <ScoreRow>
+   * gets a stable verdict without re-running the math per row.
+   */
+  const anomalyByScoreId: Record<string, ReturnType<typeof formatAnomaly>> = {}
+  for (const s of enrichedScores) {
+    const cohort = enrichedScores.filter(
+      (h) => h.eventId !== s.eventId && h.createdAt < s.createdAt,
+    )
+    const verdict = classifyAnomaly({
+      current: {
+        points: s.points,
+        eventTypeCode: s.eventTypeCode,
+        gwCycle: s.gwMeta?.cycle ?? null,
+        gwDayType: s.gwMeta?.day_type ?? null,
+      },
+      history: cohort.map((h) => ({
+        points: h.points,
+        eventTypeCode: h.eventTypeCode,
+        createdAt: h.createdAt,
+        gwCycle: h.gwMeta?.cycle ?? null,
+        gwDayType: h.gwMeta?.day_type ?? null,
+      })),
+    })
+    anomalyByScoreId[s.eventId] = formatAnomaly(verdict)
+  }
+
   return (
     <>
       <Header title={member.canonical_name} />
@@ -335,6 +370,20 @@ export default function MemberProfilePage() {
                     </span>
                   ))}
                 </div>
+              )}
+
+              {momentum.kind !== "insufficient" && (
+                <p
+                  className={cn(
+                    "mt-3 text-[12px] md:text-[13px] font-body italic max-w-xs mx-auto",
+                    momentum.kind === "elite" && "text-ember",
+                    momentum.kind === "trending_up" && "text-ember/85",
+                    momentum.kind === "trending_down" && "text-blood-light/85",
+                    momentum.kind === "steady" && "text-bone/65",
+                  )}
+                >
+                  {momentum.sentence}
+                </p>
               )}
             </motion.div>
           </div>
@@ -552,7 +601,10 @@ export default function MemberProfilePage() {
                   .slice(0, 20)
                   .map((score) => (
                     <StaggerItem key={score.id}>
-                      <ScoreRow score={score} />
+                      <ScoreRow
+                        score={score}
+                        anomaly={anomalyByScoreId[score.event_id] ?? null}
+                      />
                     </StaggerItem>
                   ))}
               </Stagger>
@@ -683,7 +735,13 @@ function StatTile({
   )
 }
 
-function ScoreRow({ score }: { score: EventScoreRow }) {
+function ScoreRow({
+  score,
+  anomaly,
+}: {
+  score: EventScoreRow
+  anomaly: ReturnType<typeof formatAnomaly> | null
+}) {
   const event = Array.isArray(score.events) ? score.events[0] : score.events
   if (!event) return null
 
@@ -739,6 +797,20 @@ function ScoreRow({ score }: { score: EventScoreRow }) {
                 cycle={event.meta_json.cycle}
                 size="xs"
               />
+            )}
+            {anomaly && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-[0.1em] px-1.5 py-0.5 rounded border",
+                  anomaly.tone === "ember"
+                    ? "bg-ember/12 text-ember border-ember/40"
+                    : "bg-blood/12 text-blood-light border-blood/40",
+                )}
+                title={anomaly.label}
+              >
+                <span aria-hidden="true">{anomaly.emoji}</span>
+                {anomaly.label}
+              </span>
             )}
           </div>
           <p className="font-semibold text-bone text-sm md:text-base line-clamp-1">

@@ -21,8 +21,14 @@ import {
   type CategoryHero,
 } from "@/components/event/oak"
 import { GWDailyHero, DayTypeBadge } from "@/components/event/gw"
+import { EventRecap } from "@/components/event/EventRecap"
 import { MemberAvatar } from "@/components/member"
 import { DeltaArrow, MicroBar, Histogram } from "@/components/dataviz"
+import {
+  deriveEventContext,
+  type EventContextEvent,
+  type EventContextLine,
+} from "@/lib/intelligence/eventContext"
 import {
   getEventConfig,
   getGWDayConfig,
@@ -82,12 +88,15 @@ export default function EventPage() {
   const router = useRouter()
   const eventId = params.id
 
+
   const [event, setEvent] = useState<EventRow | null>(null)
   const [scores, setScores] = useState<EventScore[]>([])
   const [members, setMembers] = useState<Record<string, Member>>({})
   const [campaignDays, setCampaignDays] = useState<CampaignDay[]>([])
   const [priorRanks, setPriorRanks] = useState<Record<string, number>>({})
   const [isOfficer, setIsOfficer] = useState(false)
+  /** Computed "Best Oak in 3 months" / "Soft FCU" type one-liner. */
+  const [contextLine, setContextLine] = useState<EventContextLine | null>(null)
   const [isEnding, setIsEnding] = useState(false)
   const [endError, setEndError] = useState("")
   const [isLoading, setIsLoading] = useState(true)
@@ -238,6 +247,81 @@ export default function EventPage() {
               }
               setPriorRanks(priors)
             }
+
+            // ── Event context one-liner — pull last 12 events of the same
+            // type and ask the derivation utility for a single sentence
+            // that places this event in the larger faction story.
+            try {
+              const { data: cohort } = await supabase
+                .from("events")
+                .select(
+                  "id, created_at, faction_result_json, meta_json, event_type_code",
+                )
+                .eq("event_type_code", ev.event_type_code)
+                .eq("status", "published")
+                .order("created_at", { ascending: false })
+                .limit(13)
+              if (cohort && cohort.length > 0) {
+                // Need each cohort event's totalPoints + thresholdHits.
+                const cohortIds = cohort.map((c) => c.id)
+                const { data: cohortScores } = await supabase
+                  .from("event_scores")
+                  .select("event_id, points")
+                  .in("event_id", cohortIds)
+                const totalsByEvent = new Map<string, number>()
+                const hitsByEvent = new Map<string, number>()
+                for (const c of cohort) {
+                  const meta = c.meta_json as { min_points?: number } | null
+                  const min = meta?.min_points
+                  const eventScores =
+                    cohortScores?.filter((s) => s.event_id === c.id) ?? []
+                  totalsByEvent.set(
+                    c.id,
+                    eventScores.reduce((s, x) => s + (x.points ?? 0), 0),
+                  )
+                  if (min != null) {
+                    hitsByEvent.set(
+                      c.id,
+                      eventScores.filter((s) => (s.points ?? 0) >= min).length,
+                    )
+                  }
+                }
+                const toContextEvent = (
+                  c: typeof cohort[number],
+                ): EventContextEvent => {
+                  const meta = c.meta_json as
+                    | { day_type?: string; cycle?: "war" | "hegemony"; min_points?: number }
+                    | null
+                  const fr = c.faction_result_json as
+                    | { placement?: number }
+                    | null
+                  return {
+                    id: c.id,
+                    placement: fr?.placement ?? null,
+                    totalPoints: totalsByEvent.get(c.id) ?? 0,
+                    thresholdHits: hitsByEvent.get(c.id) ?? null,
+                    threshold: meta?.min_points ?? null,
+                    createdAt: c.created_at,
+                    eventTypeCode: c.event_type_code,
+                    gw:
+                      meta?.day_type && meta?.cycle
+                        ? { cycle: meta.cycle, day_type: meta.day_type }
+                        : null,
+                  }
+                }
+                const currentCtx = toContextEvent(
+                  cohort.find((c) => c.id === eventId) ?? cohort[0],
+                )
+                const priorCtx = cohort
+                  .filter((c) => c.id !== eventId)
+                  .map(toContextEvent)
+                const line = deriveEventContext(currentCtx, priorCtx)
+                if (line) setContextLine(line)
+              }
+            } catch (ctxErr) {
+              // Context line is decorative — never fatal if it fails.
+              console.warn("[event detail] context derivation failed:", ctxErr)
+            }
           }
         }
       } catch (err) {
@@ -291,9 +375,13 @@ export default function EventPage() {
         <div className="px-5 max-w-2xl mx-auto space-y-6 md:space-y-8">
           {/* Type-specific hero */}
           {eventCode === "oak" ? (
-            <OakHero event={event} />
+            <OakHero event={event} contextLine={contextLine} />
           ) : eventCode === "gw_daily" ? (
-            <GWDailyHeroBlock event={event} scores={scores} />
+            <GWDailyHeroBlock
+              event={event}
+              scores={scores}
+              contextLine={contextLine}
+            />
           ) : eventCode === "gw_campaign" ? (
             <GWCampaignHero
               event={event}
@@ -303,12 +391,34 @@ export default function EventPage() {
               isEnding={isEnding}
             />
           ) : (
-            <FCUHero event={event} scores={scores} />
+            <FCUHero
+              event={event}
+              scores={scores}
+              contextLine={contextLine}
+            />
           )}
           {endError && (
             <div className="rounded-lg bg-blood/10 border border-blood/30 p-3 text-xs text-blood-light">
               {endError}
             </div>
+          )}
+
+          {/* Game story (AI recap) — public read, officer regenerate. Skip for
+              GW Campaign rows since dailies own the recap. */}
+          {eventCode !== "gw_campaign" && eventId && (
+            <EventRecap
+              eventId={eventId}
+              isOfficer={isOfficer}
+              initialRecapMd={
+                ((event.meta_json as Record<string, unknown> | null)?.recap_md as
+                  | string
+                  | null) ?? null
+              }
+              initialGeneratedAt={
+                ((event.meta_json as Record<string, unknown> | null)
+                  ?.recap_generated_at as string | null) ?? null
+              }
+            />
           )}
 
           {/* Leaderboard (everything except gw_campaign) */}
@@ -337,7 +447,15 @@ export default function EventPage() {
 // Hero variants
 // ─────────────────────────────────────────────────────────────────────────────
 
-function FCUHero({ event, scores }: { event: EventRow; scores: EventScore[] }) {
+function FCUHero({
+  event,
+  scores,
+  contextLine,
+}: {
+  event: EventRow
+  scores: EventScore[]
+  contextLine: EventContextLine | null
+}) {
   const total = scores.reduce((s, x) => s + x.points, 0)
   const avg = scores.length > 0 ? Math.round(total / scores.length) : 0
   const qualified = scores.filter((s) => s.points >= 1700).length
@@ -362,6 +480,7 @@ function FCUHero({ event, scores }: { event: EventRow; scores: EventScore[] }) {
           <Calendar size={11} aria-hidden="true" />
           {dateStr}
         </p>
+        {contextLine && <NotableChip line={contextLine} />}
       </div>
       <div className="grid grid-cols-3 gap-2">
         <FactStat label="Total" value={total} format="compact" />
@@ -377,7 +496,13 @@ function FCUHero({ event, scores }: { event: EventRow; scores: EventScore[] }) {
   )
 }
 
-function OakHero({ event }: { event: EventRow }) {
+function OakHero({
+  event,
+  contextLine,
+}: {
+  event: EventRow
+  contextLine: EventContextLine | null
+}) {
   const card = (event.faction_result_json as OakReportCard | null) ?? null
   if (!card || !card.placement) {
     return (
@@ -421,6 +546,7 @@ function OakHero({ event }: { event: EventRow }) {
             year: "numeric",
           })}
         </p>
+        {contextLine && <NotableChip line={contextLine} />}
       </div>
       <FactionPlacementMedal
         placement={card.placement}
@@ -457,9 +583,11 @@ function OakHero({ event }: { event: EventRow }) {
 function GWDailyHeroBlock({
   event,
   scores,
+  contextLine,
 }: {
   event: EventRow
   scores: EventScore[]
+  contextLine: EventContextLine | null
 }) {
   // Recompute "isActive" against a state-tracked clock so renders stay pure.
   const [now, setNow] = useState<Date | null>(null)
@@ -491,9 +619,12 @@ function GWDailyHeroBlock({
 
   return (
     <section className="space-y-3 pt-2">
-      <h1 className="font-display text-2xl md:text-3xl font-semibold text-bone tracking-[-0.01em]">
-        {event.title}
-      </h1>
+      <div>
+        <h1 className="font-display text-2xl md:text-3xl font-semibold text-bone tracking-[-0.01em]">
+          {event.title}
+        </h1>
+        {contextLine && <NotableChip line={contextLine} />}
+      </div>
       <GWDailyHero
         meta={meta}
         totalPoints={totalPoints}
@@ -945,6 +1076,33 @@ function CampaignDailiesList({
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Small "Best Oak in 3 months" / "Soft Robbing day" chip rendered in event
+ * heroes. Tone drives the color so a celebratory result reads ember and a
+ * warning reads blood-light.
+ */
+function NotableChip({ line }: { line: EventContextLine }) {
+  const palette =
+    line.tone === "celebratory"
+      ? "bg-ember/12 text-ember border-ember/40"
+      : line.tone === "warning"
+        ? "bg-blood/12 text-blood-light border-blood/40"
+        : "bg-smoke/60 text-bone/75 border-ash"
+  return (
+    <span
+      className={cn(
+        "mt-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border",
+        "text-[10px] font-mono font-bold uppercase tracking-[0.14em]",
+        palette,
+      )}
+      role="note"
+    >
+      <span aria-hidden="true">●</span>
+      {line.text}
+    </span>
+  )
+}
 
 function FactStat({
   label,

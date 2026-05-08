@@ -131,9 +131,7 @@ export function GWLiveBadge() {
     >
       <motion.span
         className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", palette.dotBg)}
-        animate={
-          reducedMotion ? undefined : { opacity: [0.4, 1, 0.4] }
-        }
+        animate={reducedMotion ? undefined : { opacity: [0.4, 1, 0.4] }}
         transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
         aria-hidden="true"
       />
