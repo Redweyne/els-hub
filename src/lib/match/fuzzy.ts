@@ -131,6 +131,13 @@ function scoreName(rawName: string, candidateName: string) {
   const rawLoose = normalizeLoose(rawClean)
   const candidateLoose = normalizeLoose(candidateClean)
 
+  // Special case: invisible / whitespace-only roster members. Some players
+  // pick a name made of zero-width or pure-whitespace characters. Those
+  // collapse to empty after `cleanName + normalizeLoose`. We allow them to
+  // match each other so OCR can still resolve such a row deterministically.
+  if (!rawLoose && !candidateLoose) {
+    return { score: 0.99, reason: "both invisible" }
+  }
   if (!rawLoose || !candidateLoose) {
     return { score: 0, reason: "empty" }
   }
@@ -140,12 +147,35 @@ function scoreName(rawName: string, candidateName: string) {
   if (rawLoose === candidateLoose) return { score: 0.985, reason: "normalized exact" }
 
   const maxLen = Math.max(candidateLoose.length, rawLoose.length)
+  const minLen = Math.min(candidateLoose.length, rawLoose.length)
   const distance = levenshteinDistance(candidateLoose, rawLoose)
+
+  // Off-by-N short-circuits — these handle the bulk of "obvious OCR typos"
+  // that the older weighted-mean math would have shipped to the review
+  // queue. Keep them before the generic fuzzy path so they fire first.
+  if (minLen >= 3 && distance <= 1) {
+    // One edit away on a 3+ char string is almost always the same name.
+    return { score: 0.97, reason: "off-by-one" }
+  }
+  if (minLen >= 5 && distance <= 2) {
+    return { score: 0.93, reason: "off-by-two" }
+  }
+  if (minLen >= 8 && distance <= 3) {
+    return { score: 0.9, reason: "off-by-three (long)" }
+  }
+
   const levenScore = Math.max(0, 1 - distance / maxLen)
   const tokenScore = tokenSimilarity(candidateDecorated, rawDecorated)
-  const substringBonus = hasStrongSubstring(candidateLoose, rawLoose) ? 0.08 : 0
-  const lengthPenalty = Math.abs(candidateLoose.length - rawLoose.length) / Math.max(candidateLoose.length, rawLoose.length)
-  const combined = Math.max(0, Math.min(0.97, levenScore * 0.72 + tokenScore * 0.2 + substringBonus - lengthPenalty * 0.12))
+  const substringBonus = hasStrongSubstring(candidateLoose, rawLoose) ? 0.1 : 0
+  const lengthPenalty =
+    Math.abs(candidateLoose.length - rawLoose.length) / maxLen
+  const combined = Math.max(
+    0,
+    Math.min(
+      0.97,
+      levenScore * 0.72 + tokenScore * 0.2 + substringBonus - lengthPenalty * 0.1,
+    ),
+  )
 
   return { score: combined, reason: "fuzzy normalized" }
 }
@@ -193,9 +223,16 @@ export function autoResolveMatch(candidates: MatchCandidate[]): MatchCandidate |
   const secondScore = second?.confidence ?? 0
   const gap = best.confidence - secondScore
 
-  if (best.confidence >= 0.985) return best
-  if (best.confidence >= 0.94 && gap >= 0.06) return best
-  if (best.confidence >= 0.88 && gap >= 0.18) return best
+  // Tiered auto-accept thresholds:
+  //   - 0.97+    → always accept (exact / off-by-one / very-near matches)
+  //   - 0.92+ with a small gap → accept (clear winner over runner-up)
+  //   - 0.85+ with a big gap   → accept (only one plausible candidate)
+  // The "big gap" rule rescues short names where the runner-up is far
+  // worse, e.g. raw "Reu" matching member "Reu" when the next candidate
+  // is "Redweyne" with a much lower confidence.
+  if (best.confidence >= 0.97) return best
+  if (best.confidence >= 0.92 && gap >= 0.05) return best
+  if (best.confidence >= 0.85 && gap >= 0.2) return best
 
   return null
 }
@@ -214,7 +251,16 @@ export function canonicalAlias(rawName: string) {
 
 export function isLikelyFactionMemberName(rawName: string) {
   const cleaned = cleanName(rawName)
-  if (!cleaned) return false
+  // Invisible / whitespace-only names are LEGAL — some players literally
+  // pick zero-width or all-space character names and we still need to be
+  // able to attribute their scores. We only reject pure numeric-tag rows
+  // (those tend to come from misread footer noise, not real names).
+  if (!cleaned) {
+    // Allow only when the original raw had at least *something* to cling to
+    // (any non-whitespace code point). A literal empty raw_name is
+    // probably a parser glitch, not a real player.
+    return rawName.length > 0
+  }
   if (/^\d+$/.test(cleaned)) return false
   if (cleaned.length < 2) return false
   return true

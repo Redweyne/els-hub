@@ -6,6 +6,7 @@ import { ToastProvider } from "@/components/ui/toast"
 import { ErrorBoundary } from "@/components/layout/ErrorBoundary"
 import { SessionTracker } from "@/components/analytics/SessionTracker"
 import { MemberPeekProvider } from "@/components/member/MemberPeek"
+import { UploadBanner } from "@/components/layout/UploadBanner"
 
 export function Providers({ children }: { children: ReactNode }) {
   return (
@@ -15,6 +16,7 @@ export function Providers({ children }: { children: ReactNode }) {
           <Suspense fallback={null}>
             <SessionTracker />
           </Suspense>
+          <UploadBanner />
           {children}
         </MemberPeekProvider>
       </ToastProvider>

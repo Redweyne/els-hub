@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic"
 
-import { Suspense, useEffect, useMemo, useState, useCallback, type ChangeEvent, type FormEvent } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState, useCallback, type ChangeEvent, type FormEvent } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
@@ -19,6 +19,7 @@ import {
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
+import { writeInFlightUpload } from "@/components/layout/UploadBanner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Eyebrow } from "@/components/typography"
@@ -88,9 +89,53 @@ export default function UploadEventPage() {
   )
 }
 
+// Wake Lock isn't on the standard `Navigator` type yet; declare just enough.
+type WakeLockSentinel = { release: () => Promise<void> }
+type WakeLockNavigator = Navigator & {
+  wakeLock?: { request: (type: "screen") => Promise<WakeLockSentinel> }
+}
+
 function UploadEventInner() {
   const router = useRouter()
   const search = useSearchParams()
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null)
+  // Mirror `isLoading` into a ref so the visibility handler can read the
+  // latest value without re-binding.
+  const uploadingRef = useRef(false)
+
+  const acquireWakeLock = useCallback(async () => {
+    if (typeof navigator === "undefined") return
+    const nav = navigator as WakeLockNavigator
+    if (!nav.wakeLock) return
+    try {
+      wakeLockRef.current = await nav.wakeLock.request("screen")
+    } catch {
+      // Fine; Wake Lock is opportunistic. The upload still continues
+      // server-side regardless of whether the screen stays on.
+    }
+  }, [])
+
+  const releaseWakeLock = useCallback(async () => {
+    try {
+      await wakeLockRef.current?.release()
+    } catch {
+      // ignore
+    }
+    wakeLockRef.current = null
+  }, [])
+
+  // Re-acquire the wake lock if the user backgrounds and re-foregrounds
+  // mid-upload (browsers auto-release when the page loses visibility).
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible" && wakeLockRef.current === null) {
+        // Only re-acquire if an upload is still active.
+        if (uploadingRef.current) acquireWakeLock()
+      }
+    }
+    document.addEventListener("visibilitychange", onVis)
+    return () => document.removeEventListener("visibilitychange", onVis)
+  }, [acquireWakeLock])
 
   const [eventType, setEventType] = useState<EventTypeCode>(() => {
     const t = search.get("type")
@@ -281,11 +326,17 @@ function UploadEventInner() {
     }
 
     setIsLoading(true)
+    uploadingRef.current = true
     setError("")
     setSuccess("")
     setProgress([])
     setProcessedCount(0)
     setTotalFiles(0)
+
+    // Keep the screen awake while we upload — release in `finally`. This is
+    // best-effort: browsers may decline (battery saver, lock-screen rules);
+    // the upload still continues server-side regardless.
+    void acquireWakeLock()
 
     try {
       const formData = new FormData()
@@ -335,7 +386,21 @@ function UploadEventInner() {
             if (update.type === "start") {
               setTotalFiles(update.totalFiles ?? 0)
             } else if (update.type === "event_created" || update.type === "event_reused") {
-              // captured in finalData if no review
+              // Persist the in-flight upload so the global banner can show
+              // progress even after the officer leaves this page or the
+              // streaming connection drops (phone backgrounded, tab switched).
+              if (update.eventId) {
+                writeInFlightUpload({
+                  eventId: update.eventId,
+                  title:
+                    mode === "new"
+                      ? eventTitle.trim() || `${cfg.label} upload`
+                      : existingEvents.find((e) => e.id === selectedEventId)?.title ?? `${cfg.label} update`,
+                  totalFiles: files.length,
+                  startedAt: Date.now(),
+                  type: eventType,
+                })
+              }
             } else if (update.type === "processing") {
               setProgress((prev) => [
                 ...prev,
@@ -373,6 +438,9 @@ function UploadEventInner() {
         setFiles([])
         setEventTitle("")
         setSelectedEventId("")
+        // Upload finished cleanly — the banner will flip to "complete" via
+        // its own polling, then the user can dismiss it. Clearing here would
+        // hide it before the redirect lands.
 
         if ((finalData.reviewQueueCount ?? 0) > 0) {
           setTimeout(() => {
@@ -386,8 +454,13 @@ function UploadEventInner() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed")
+      // Streaming errored client-side — but the server may still finish OCR.
+      // Leave the LS entry so the banner keeps polling; if the server flips
+      // status to 'published', the banner will surface that.
     } finally {
       setIsLoading(false)
+      uploadingRef.current = false
+      void releaseWakeLock()
     }
   }
 
@@ -765,6 +838,10 @@ function UploadEventInner() {
                       </li>
                     ))}
                   </ul>
+                  <p className="text-[11px] text-bone/50 leading-relaxed">
+                    Safe to leave this page — processing continues on the server.
+                    Track progress in the banner at the top of any screen.
+                  </p>
                 </CardContent>
               </Card>
             )}
