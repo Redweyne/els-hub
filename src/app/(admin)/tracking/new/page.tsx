@@ -33,21 +33,24 @@ import {
   type GWCampaignMeta,
   getGWThreshold,
 } from "@/lib/events/config"
-import { getActiveGWDay, formatActiveDay } from "@/lib/gw/schedule"
+import {
+  getActiveGWDay,
+  formatActiveDay,
+  formatGWDailyTitle,
+} from "@/lib/gw/schedule"
 import { apiPath } from "@/lib/paths"
 import { cn } from "@/lib/cn"
 
-interface ProgressUpdate {
-  type: string
-  totalFiles?: number
-  fileNumber?: number
-  fileName?: string
-  rowCount?: number
-  eventId?: string
-  totalRows?: number
-  autoResolved?: number
-  reviewQueueCount?: number
-  message?: string
+interface UploadResponse {
+  eventId: string
+  totalFiles: number
+  status: string
+}
+
+interface UploadErrorResponse {
+  error: string
+  code?: string
+  existingEventId?: string
 }
 
 interface ExistingEvent {
@@ -152,9 +155,6 @@ function UploadEventInner() {
   const [success, setSuccess] = useState("")
   const [factionId, setFactionId] = useState("")
   const [eventTitle, setEventTitle] = useState("")
-  const [progress, setProgress] = useState<ProgressUpdate[]>([])
-  const [totalFiles, setTotalFiles] = useState(0)
-  const [processedCount, setProcessedCount] = useState(0)
   const [mode, setMode] = useState<"new" | "update">("new")
   const [existingEvents, setExistingEvents] = useState<ExistingEvent[]>([])
   const [selectedEventId, setSelectedEventId] = useState<string>("")
@@ -301,7 +301,6 @@ function UploadEventInner() {
     setSelectedEventId("")
     setError("")
     setSuccess("")
-    setProgress([])
     setMode("new")
     setGwOverrideOpen(false)
   }, [])
@@ -329,13 +328,12 @@ function UploadEventInner() {
     uploadingRef.current = true
     setError("")
     setSuccess("")
-    setProgress([])
-    setProcessedCount(0)
-    setTotalFiles(0)
 
-    // Keep the screen awake while we upload — release in `finally`. This is
-    // best-effort: browsers may decline (battery saver, lock-screen rules);
-    // the upload still continues server-side regardless.
+    // Wake Lock is best-effort — extends foreground screen-on time. The
+    // upload itself does NOT depend on the screen staying lit: as soon as
+    // the server accepts the screenshots, processing runs in the background
+    // regardless of client state. So if Wake Lock fails or the phone locks,
+    // OCR still completes.
     void acquireWakeLock()
 
     try {
@@ -346,6 +344,8 @@ function UploadEventInner() {
 
       if (mode === "update") {
         formData.append("event_id", selectedEventId)
+      } else if (eventType === "gw_daily" && activeCampaign) {
+        // Title is server-generated for GW Daily — no client input here.
       } else {
         formData.append("event_title", eventTitle.trim())
       }
@@ -356,7 +356,10 @@ function UploadEventInner() {
         formData.append("gw_super_cycle", String(gwSuperCycle))
         formData.append("gw_day_in_cycle", String(gwDayInCycle))
         formData.append("gw_day_type", gwDayType)
-        formData.append("gw_min_points", String(getGWThreshold(gwDayType, gwCycle)))
+        formData.append(
+          "gw_min_points",
+          String(getGWThreshold(gwDayType, gwCycle)),
+        )
         formData.append("gw_deadline_iso", gwDeadlineIso)
       }
 
@@ -364,99 +367,57 @@ function UploadEventInner() {
         method: "POST",
         body: formData,
       })
-      if (!response.ok) throw new Error("Upload failed")
 
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error("No response body")
+      const json = (await response.json()) as
+        | UploadResponse
+        | UploadErrorResponse
 
-      const decoder = new TextDecoder()
-      let buffer = ""
-      let finalData: ProgressUpdate | null = null
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n")
-        buffer = lines.pop() ?? ""
-        for (const line of lines) {
-          if (!line.trim()) continue
-          try {
-            const update: ProgressUpdate = JSON.parse(line)
-            if (update.type === "start") {
-              setTotalFiles(update.totalFiles ?? 0)
-            } else if (update.type === "event_created" || update.type === "event_reused") {
-              // Persist the in-flight upload so the global banner can show
-              // progress even after the officer leaves this page or the
-              // streaming connection drops (phone backgrounded, tab switched).
-              if (update.eventId) {
-                writeInFlightUpload({
-                  eventId: update.eventId,
-                  title:
-                    mode === "new"
-                      ? eventTitle.trim() || `${cfg.label} upload`
-                      : existingEvents.find((e) => e.id === selectedEventId)?.title ?? `${cfg.label} update`,
-                  totalFiles: files.length,
-                  startedAt: Date.now(),
-                  type: eventType,
-                })
-              }
-            } else if (update.type === "processing") {
-              setProgress((prev) => [
-                ...prev,
-                { type: "processing", fileName: update.fileName, fileNumber: update.fileNumber },
-              ])
-            } else if (update.type === "extracted") {
-              setProgress((prev) => [
-                ...prev,
-                {
-                  type: "extracted",
-                  fileName: update.fileName,
-                  fileNumber: update.fileNumber,
-                  rowCount: update.rowCount,
-                },
-              ])
-              setProcessedCount(update.fileNumber ?? 0)
-            } else if (update.type === "complete") {
-              finalData = update
-            } else if (update.type === "error") {
-              throw new Error(update.message ?? "Processing failed")
-            }
-          } catch (parseErr) {
-            if (parseErr instanceof Error && !parseErr.message.startsWith("Processing")) {
-              console.error("Failed to parse progress update:", line, parseErr)
-            }
-          }
-        }
-      }
-
-      if (finalData) {
-        const action = mode === "update" ? "Updated" : "Processed"
-        setSuccess(
-          `${action}! ${finalData.autoResolved} auto-matched, ${finalData.reviewQueueCount} need review.`,
-        )
-        setFiles([])
-        setEventTitle("")
-        setSelectedEventId("")
-        // Upload finished cleanly — the banner will flip to "complete" via
-        // its own polling, then the user can dismiss it. Clearing here would
-        // hide it before the redirect lands.
-
-        if ((finalData.reviewQueueCount ?? 0) > 0) {
-          setTimeout(() => {
-            router.push(`/tracking/review?event_id=${finalData?.eventId}`)
-          }, 1500)
+      if (!response.ok) {
+        const errJson = json as UploadErrorResponse
+        // Duplicate-GW conflict: suggest switching to Update Existing.
+        if (
+          errJson.code === "duplicate_gw_daily" &&
+          errJson.existingEventId
+        ) {
+          setError(errJson.error)
+          setMode("update")
+          setSelectedEventId(errJson.existingEventId)
         } else {
-          setTimeout(() => {
-            router.push(`/events/${finalData?.eventId}`)
-          }, 1500)
+          setError(errJson.error || "Upload failed")
         }
+        return
       }
+
+      const ok = json as UploadResponse
+      const inferredTitle =
+        mode === "new"
+          ? eventType === "gw_daily" && activeCampaign
+            ? formatGWDailyTitle(gwDayType, gwCycle, new Date())
+            : eventTitle.trim() || `${cfg.label} upload`
+          : existingEvents.find((e) => e.id === selectedEventId)?.title ??
+            `${cfg.label} update`
+
+      // Pin to global banner so progress is visible across navigation.
+      writeInFlightUpload({
+        eventId: ok.eventId,
+        title: inferredTitle,
+        totalFiles: ok.totalFiles,
+        startedAt: Date.now(),
+        type: eventType,
+      })
+
+      setSuccess(
+        `Upload accepted — ${ok.totalFiles} screenshot${ok.totalFiles === 1 ? "" : "s"} processing. Taking you to the event…`,
+      )
+      setFiles([])
+      setEventTitle("")
+      setSelectedEventId("")
+
+      // Hand off immediately. The event page shows the live processing
+      // state and auto-refreshes when the worker publishes.
+      router.push(`/events/${ok.eventId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed")
-      // Streaming errored client-side — but the server may still finish OCR.
-      // Leave the LS entry so the banner keeps polling; if the server flips
-      // status to 'published', the banner will surface that.
     } finally {
       setIsLoading(false)
       uploadingRef.current = false
@@ -646,29 +607,10 @@ function UploadEventInner() {
               </Card>
             )}
 
-            {/* Title (new mode, GW Daily — auto-suggested but editable) */}
-            {mode === "new" && eventType === "gw_daily" && activeCampaign && (
-              <Card className="bg-smoke/70 border-ash">
-                <CardContent className="p-4 md:p-5">
-                  <label
-                    htmlFor="event-title"
-                    className="block text-[11px] uppercase tracking-[0.18em] text-bone/55 font-body mb-2"
-                  >
-                    Daily Title
-                  </label>
-                  <input
-                    id="event-title"
-                    type="text"
-                    value={eventTitle}
-                    onChange={(e) => setEventTitle(e.target.value)}
-                    disabled={isLoading}
-                    placeholder="GW · War · Day 2 · Kingpin"
-                    className="w-full bg-ink/60 border border-ash rounded-lg px-3 py-3 text-bone placeholder-bone/35 focus:outline-none focus:border-ember/60 text-base"
-                    autoComplete="off"
-                  />
-                </CardContent>
-              </Card>
-            )}
+            {/* GW Daily titles are server-stamped (e.g. "Robbing 05/10"
+                or "Robbing Hegemony 05/10") to keep them deterministic and
+                prevent officers from accidentally creating multiple events
+                for the same day. No manual title input here. */}
 
             {/* Existing event picker (update mode) */}
             {mode === "update" && (
@@ -795,55 +737,20 @@ function UploadEventInner() {
               </CardContent>
             </Card>
 
-            {/* Progress */}
-            {isLoading && progress.length > 0 && (
-              <Card className="bg-smoke/70 border-ash">
-                <CardContent className="p-4 md:p-5 space-y-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[11px] uppercase tracking-[0.18em] text-bone/65 font-body">
-                      Processing
-                    </p>
-                    <p className="text-sm font-mono text-ember font-bold tabular-nums">
-                      {processedCount}/{totalFiles}
-                    </p>
-                  </div>
-                  <div className="w-full bg-ash/30 rounded-full h-2.5 overflow-hidden">
-                    <motion.div
-                      className="bg-ember h-full"
-                      animate={{
-                        width:
-                          totalFiles > 0
-                            ? `${(processedCount / totalFiles) * 100}%`
-                            : "0%",
-                      }}
-                      transition={{ duration: 0.3, ease: "easeOut" }}
-                    />
-                  </div>
-                  <ul className="space-y-2.5 max-h-48 overflow-y-auto">
-                    {progress.map((p, idx) => (
-                      <li key={idx} className="flex items-center gap-3">
-                        {p.type === "extracted" ? (
-                          <CheckCircle2 size={16} className="text-ember flex-shrink-0" aria-hidden="true" />
-                        ) : (
-                          <Loader2 size={16} className="text-bone/50 animate-spin flex-shrink-0" aria-hidden="true" />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-bone truncate font-medium">{p.fileName}</p>
-                          {p.type === "extracted" && p.rowCount && (
-                            <p className="text-[11px] text-bone/55 mt-0.5">
-                              {p.rowCount} row{p.rowCount === 1 ? "" : "s"}
-                            </p>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="text-[11px] text-bone/50 leading-relaxed">
-                    Safe to leave this page — processing continues on the server.
-                    Track progress in the banner at the top of any screen.
-                  </p>
-                </CardContent>
-              </Card>
+            {/* When loading: just show a tiny "accepting upload..." chip.
+                Real progress lives on the event page + the global banner. */}
+            {isLoading && (
+              <div className="flex items-center gap-3 rounded-lg bg-smoke/70 border border-ash p-3">
+                <Loader2
+                  size={16}
+                  className="text-ember animate-spin flex-shrink-0"
+                  aria-hidden="true"
+                />
+                <p className="text-[12px] text-bone/75 leading-snug">
+                  Uploading screenshots… processing runs on the server. You
+                  can leave this page; the banner up top tracks progress.
+                </p>
+              </div>
             )}
 
             {error && (

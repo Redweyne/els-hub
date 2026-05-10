@@ -508,3 +508,13 @@ h3 {
     animation: none !important;
   }
 }
+
+/* Utility: hide native scrollbar on horizontal-scroll filter rails.
+   Used by pulse pages, member quick-links, and event filter bars. */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

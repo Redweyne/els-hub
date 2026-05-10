@@ -98,7 +98,7 @@ export default function RosterPage() {
   }
 
   return (
-    <main className="film-grain bg-ink min-h-screen px-6 py-12">
+    <main className="film-grain bg-ink min-h-screen px-6 pt-24 pb-12">
       <div className="max-w-6xl mx-auto">
         <h1 className="font-display text-4xl text-bone mb-2 tracking-[0.3em]">
           Roster Review

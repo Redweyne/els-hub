@@ -7,7 +7,13 @@ import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion, useReducedMotion } from "framer-motion"
-import { Calendar, ChevronRight, Sword } from "lucide-react"
+import {
+  AlertCircle,
+  Calendar,
+  ChevronRight,
+  Loader2,
+  Sword,
+} from "lucide-react"
 import { apiPath } from "@/lib/paths"
 
 import { Header } from "@/components/layout/Header"
@@ -16,7 +22,6 @@ import { Eyebrow, Numeric } from "@/components/typography"
 import { OrnateDivider } from "@/components/heraldry"
 import {
   FactionPlacementMedal,
-  BattleStatsTrio,
   CategoryHeroes,
   type CategoryHero,
 } from "@/components/event/oak"
@@ -95,12 +100,31 @@ export default function EventPage() {
   const [campaignDays, setCampaignDays] = useState<CampaignDay[]>([])
   const [priorRanks, setPriorRanks] = useState<Record<string, number>>({})
   const [isOfficer, setIsOfficer] = useState(false)
+  // Neighbors of the same event type for prev/next navigation.
+  const [neighbors, setNeighbors] = useState<{
+    prev: { id: string; title: string } | null
+    next: { id: string; title: string } | null
+  }>({ prev: null, next: null })
+  // Parent campaign reference when this event is a GW Daily.
+  const [parentCampaign, setParentCampaign] = useState<{
+    id: string
+    title: string
+  } | null>(null)
   /** Computed "Best Oak in 3 months" / "Soft FCU" type one-liner. */
   const [contextLine, setContextLine] = useState<EventContextLine | null>(null)
   const [isEnding, setIsEnding] = useState(false)
   const [endError, setEndError] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState("")
+  // Live status while OCR is mid-flight. Polled while event.status='processing'.
+  const [liveStatus, setLiveStatus] = useState<{
+    screenshotsTotal: number
+    screenshotsDone: number
+    screenshotsFailed: number
+    scoresWritten: number
+    reviewQueuePending: number
+    status: string
+  } | null>(null)
 
   const handleEndCampaign = async () => {
     if (!eventId) return
@@ -136,6 +160,72 @@ export default function EventPage() {
       setIsEnding(false)
     }
   }
+
+  // Live status polling while the event is mid-OCR. Pings /status every 3s
+  // and re-runs the loader once the worker flips status='published' so all
+  // downstream data (scores, members, leaderboard) refreshes cleanly.
+  useEffect(() => {
+    if (!eventId) return
+    if (event?.status !== "processing") return
+
+    let cancelled = false
+    let tick: ReturnType<typeof setTimeout> | null = null
+    let lastStatus = event.status
+
+    const pollOnce = async () => {
+      try {
+        const res = await fetch(apiPath(`/tracking/status/${eventId}`), {
+          cache: "no-store",
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (cancelled) return
+        setLiveStatus({
+          screenshotsTotal: data.screenshotsTotal ?? 0,
+          screenshotsDone: data.screenshotsDone ?? 0,
+          screenshotsFailed: data.screenshotsFailed ?? 0,
+          scoresWritten: data.scoresWritten ?? 0,
+          reviewQueuePending: data.reviewQueuePending ?? 0,
+          status: data.status ?? "processing",
+        })
+        if (data.status && data.status !== lastStatus) {
+          lastStatus = data.status
+          if (data.status === "published") {
+            // Re-fetch the full event payload so leaderboard, scores, etc.
+            // light up without a manual refresh.
+            window.dispatchEvent(new Event("els:event:refresh"))
+          }
+        }
+      } catch {
+        /* polling errors are non-fatal — just keep trying */
+      }
+    }
+
+    const loop = async () => {
+      await pollOnce()
+      if (!cancelled) tick = setTimeout(loop, 3000)
+    }
+    loop()
+    return () => {
+      cancelled = true
+      if (tick) clearTimeout(tick)
+    }
+  }, [eventId, event?.status])
+
+  // Reload the event payload when the status poll says we flipped published.
+  useEffect(() => {
+    const handler = () => {
+      // Re-run the loader by toggling the dependency. We use a ref-free
+      // approach: just hard-reload the page so server state is fresh.
+      router.refresh()
+      // Also re-run the initial loader by clearing event state so the
+      // effect below re-fires.
+      setIsLoading(true)
+      setEvent(null)
+    }
+    window.addEventListener("els:event:refresh", handler)
+    return () => window.removeEventListener("els:event:refresh", handler)
+  }, [router])
 
   useEffect(() => {
     const load = async () => {
@@ -212,6 +302,49 @@ export default function EventPage() {
             .order("points", { ascending: false })
           if (ssErr) throw ssErr
           setScores((ss ?? []) as EventScore[])
+
+          // Neighbors for prev/next nav (same event-type, by created_at).
+          // We pull both in parallel — small queries, big UX win.
+          const [{ data: prevRow }, { data: nextRow }] = await Promise.all([
+            supabase
+              .from("events")
+              .select("id, title")
+              .eq("event_type_code", ev.event_type_code)
+              .eq("status", "published")
+              .lt("created_at", ev.created_at)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+            supabase
+              .from("events")
+              .select("id, title")
+              .eq("event_type_code", ev.event_type_code)
+              .eq("status", "published")
+              .gt("created_at", ev.created_at)
+              .order("created_at", { ascending: true })
+              .limit(1)
+              .maybeSingle(),
+          ])
+          setNeighbors({
+            prev: prevRow ? { id: prevRow.id, title: prevRow.title } : null,
+            next: nextRow ? { id: nextRow.id, title: nextRow.title } : null,
+          })
+
+          // If this is a GW Daily, look up the parent campaign for the
+          // breadcrumb. We store the campaign id in meta_json.campaign_id.
+          if (ev.event_type_code === "gw_daily") {
+            const meta = ev.meta_json as { campaign_id?: string } | null
+            if (meta?.campaign_id) {
+              const { data: parent } = await supabase
+                .from("events")
+                .select("id, title")
+                .eq("id", meta.campaign_id)
+                .maybeSingle()
+              if (parent) {
+                setParentCampaign({ id: parent.id, title: parent.title })
+              }
+            }
+          }
 
           if (ss && ss.length > 0) {
             const memberIds = [...new Set(ss.map((s) => s.member_id))]
@@ -373,6 +506,13 @@ export default function EventPage() {
       <Header title={event.title || cfg.label} />
       <main id="main" className="min-h-screen bg-ink pt-20 pb-bottom-nav surface-1">
         <div className="px-5 max-w-2xl mx-auto space-y-6 md:space-y-8">
+          {/* Breadcrumb — keeps the user oriented and offers cross-links
+              to the parent campaign and the type's faction pulse. */}
+          <EventBreadcrumb
+            eventCode={eventCode}
+            parentCampaign={parentCampaign}
+          />
+
           {/* Type-specific hero */}
           {eventCode === "oak" ? (
             <OakHero event={event} contextLine={contextLine} />
@@ -401,6 +541,24 @@ export default function EventPage() {
             <div className="rounded-lg bg-blood/10 border border-blood/30 p-3 text-xs text-blood-light">
               {endError}
             </div>
+          )}
+
+          {/* Live processing card — visible only while the OCR worker
+              is still chewing through screenshots for this event. */}
+          {event.status === "processing" && liveStatus && (
+            <ProcessingCard liveStatus={liveStatus} />
+          )}
+          {event.status === "processing" && !liveStatus && (
+            <ProcessingCard
+              liveStatus={{
+                screenshotsTotal: 0,
+                screenshotsDone: 0,
+                screenshotsFailed: 0,
+                scoresWritten: 0,
+                reviewQueuePending: 0,
+                status: "processing",
+              }}
+            />
           )}
 
           {/* Game story (AI recap) — public read, officer regenerate. Skip for
@@ -436,10 +594,148 @@ export default function EventPage() {
           {eventCode === "gw_campaign" && (
             <CampaignDailiesList event={event} dailies={campaignDays} />
           )}
+
+          {/* Prev/next event nav — strictly same event-type to keep the
+              comparison meaningful. Hidden on gw_campaign rows (they own
+              their own daily list above). */}
+          {eventCode !== "gw_campaign" && (
+            <EventNeighborNav
+              prev={neighbors.prev}
+              next={neighbors.next}
+              eventCode={eventCode}
+            />
+          )}
         </div>
       </main>
       <BottomNav />
     </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-link / nav helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function EventBreadcrumb({
+  eventCode,
+  parentCampaign,
+}: {
+  eventCode: EventTypeCode
+  parentCampaign: { id: string; title: string } | null
+}) {
+  const cfg = getEventConfig(eventCode)
+  if (!cfg) return null
+  const pulseHref = `/pulse/${eventCode === "gw_campaign" ? "gw_daily" : eventCode}`
+  return (
+    <nav
+      aria-label="Event context"
+      className="-mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-[0.16em] font-body text-bone/45 flex-wrap"
+    >
+      <Link
+        href="/events"
+        className="hover:text-ember transition-colors focus-visible:outline-none focus-visible:underline"
+      >
+        Archive
+      </Link>
+      <ChevronRight size={10} aria-hidden="true" />
+      <Link
+        href={pulseHref}
+        className="hover:text-ember transition-colors inline-flex items-center gap-1"
+      >
+        <span>{cfg.abbrev} Pulse</span>
+      </Link>
+      {parentCampaign && (
+        <>
+          <ChevronRight size={10} aria-hidden="true" />
+          <Link
+            href={`/events/${parentCampaign.id}`}
+            className="hover:text-ember transition-colors max-w-[120px] truncate normal-case tracking-[0.08em]"
+            title={parentCampaign.title}
+          >
+            {parentCampaign.title}
+          </Link>
+        </>
+      )}
+    </nav>
+  )
+}
+
+function EventNeighborNav({
+  prev,
+  next,
+  eventCode,
+}: {
+  prev: { id: string; title: string } | null
+  next: { id: string; title: string } | null
+  eventCode: EventTypeCode
+}) {
+  if (!prev && !next) return null
+  const cfg = getEventConfig(eventCode)
+  return (
+    <nav
+      aria-label="Prev / next event"
+      className="pt-2 grid grid-cols-2 gap-2"
+    >
+      <NeighborLink
+        target={prev}
+        side="prev"
+        emptyLabel={`Oldest ${cfg?.abbrev ?? "event"}`}
+      />
+      <NeighborLink
+        target={next}
+        side="next"
+        emptyLabel={`Latest ${cfg?.abbrev ?? "event"}`}
+      />
+    </nav>
+  )
+}
+
+function NeighborLink({
+  target,
+  side,
+  emptyLabel,
+}: {
+  target: { id: string; title: string } | null
+  side: "prev" | "next"
+  emptyLabel: string
+}) {
+  if (!target) {
+    return (
+      <div
+        className={cn(
+          "rounded-xl border border-ash/40 bg-ink/30 p-3 opacity-50",
+          side === "prev" ? "text-left" : "text-right",
+        )}
+      >
+        <p className="text-[9px] uppercase tracking-[0.18em] text-bone/40 font-body">
+          {side === "prev" ? "Older" : "Newer"}
+        </p>
+        <p className="mt-0.5 text-[12px] text-bone/50 font-body">
+          {emptyLabel}
+        </p>
+      </div>
+    )
+  }
+  return (
+    <Link
+      href={`/events/${target.id}`}
+      className={cn(
+        "block rounded-xl border border-ash bg-ink/45 p-3",
+        "transition-all duration-150 active:scale-[0.98]",
+        "hover:border-ember/45 hover:bg-ink/65",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+        side === "prev" ? "text-left" : "text-right",
+      )}
+    >
+      <p className="text-[9px] uppercase tracking-[0.18em] text-bone/55 font-body inline-flex items-center gap-1">
+        {side === "prev" && <ChevronRight size={10} className="rotate-180" aria-hidden="true" />}
+        <span>{side === "prev" ? "Older" : "Newer"}</span>
+        {side === "next" && <ChevronRight size={10} aria-hidden="true" />}
+      </p>
+      <p className="mt-0.5 text-[13px] font-semibold text-bone truncate leading-snug">
+        {target.title}
+      </p>
+    </Link>
   )
 }
 
@@ -554,18 +850,12 @@ function OakHero({
         classPointsDelta={card.class_points_delta}
         idScope={`oak-${event.id}`}
       />
-      <div>
-        <Eyebrow tone="ember" size="xs">
-          Battle Stats
-        </Eyebrow>
-        <div className="mt-2">
-          <BattleStatsTrio
-            total={card.battle_stats.total}
-            kill={card.battle_stats.kill}
-            occupation={card.battle_stats.occupation}
-          />
-        </div>
-      </div>
+      {/* The "Battle Stats" panel in the Oakvale Faction Results screen
+          actually shows the uploader's PERSONAL stats, not the faction's.
+          We deliberately do NOT render it — the faction-level number is
+          the Class Points delta in the placement medal, and the per-member
+          totals are in the leaderboard below. Rendering personal numbers
+          as faction stats was actively misleading. */}
       {heroes.length > 0 && (
         <div>
           <Eyebrow tone="ember" size="xs">
@@ -1134,6 +1424,121 @@ function FactStat({
         precision={1}
         className={cn("mt-1 text-lg md:text-xl font-bold", valueClass)}
       />
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Processing card — visible while the OCR worker is still running.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ProcessingCard({
+  liveStatus,
+}: {
+  liveStatus: {
+    screenshotsTotal: number
+    screenshotsDone: number
+    screenshotsFailed: number
+    scoresWritten: number
+    reviewQueuePending: number
+    status: string
+  }
+}) {
+  const { screenshotsTotal, screenshotsDone, screenshotsFailed, scoresWritten } =
+    liveStatus
+  const pct =
+    screenshotsTotal > 0
+      ? Math.min(100, Math.round((screenshotsDone / screenshotsTotal) * 100))
+      : 5
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
+      className="surface-3 rounded-2xl border border-ember/30 overflow-hidden"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="relative p-4 md:p-5">
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 pointer-events-none [background:radial-gradient(ellipse_at_top_right,rgba(201,162,39,0.12),transparent_60%)]"
+        />
+        <div className="relative">
+          <div className="flex items-center gap-3">
+            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-ember/15 border border-ember/40 flex items-center justify-center">
+              <Loader2
+                size={18}
+                className="text-ember animate-spin"
+                aria-hidden="true"
+              />
+            </div>
+            <div className="flex-1 min-w-0">
+              <Eyebrow tone="ember" size="xs">
+                Live · Processing
+              </Eyebrow>
+              <p className="mt-0.5 font-display text-base font-semibold text-bone leading-tight">
+                Crunching screenshots…
+              </p>
+            </div>
+            <span className="text-[12px] font-mono tabular-nums text-bone/65 flex-shrink-0">
+              {screenshotsDone}/{screenshotsTotal || "?"}
+            </span>
+          </div>
+
+          <div className="mt-4 h-[5px] w-full rounded-full bg-ash/40 overflow-hidden">
+            <motion.div
+              className="h-full bg-gradient-to-r from-ember-light via-ember to-ember-dark"
+              animate={{ width: `${pct}%` }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            />
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            <MiniStat label="Scores so far" value={scoresWritten} />
+            <MiniStat label="Failed shots" value={screenshotsFailed} tone={screenshotsFailed > 0 ? "blood" : "default"} />
+            <MiniStat label="Will review" value={liveStatus.reviewQueuePending} />
+          </div>
+
+          <p className="mt-3 text-[11px] text-bone/55 leading-relaxed flex items-start gap-1.5">
+            <AlertCircle
+              size={11}
+              className="text-bone/50 flex-shrink-0 mt-0.5"
+              aria-hidden="true"
+            />
+            <span>
+              Server-side OCR is running. Safe to close this tab; results
+              will appear here as soon as the worker finishes.
+            </span>
+          </p>
+        </div>
+      </div>
+    </motion.section>
+  )
+}
+
+function MiniStat({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string
+  value: number
+  tone?: "default" | "blood"
+}) {
+  return (
+    <div className="rounded-lg bg-ink/55 border border-ash/55 px-2.5 py-2">
+      <p className="text-[9px] uppercase tracking-[0.18em] text-bone/45 font-body leading-tight">
+        {label}
+      </p>
+      <p
+        className={cn(
+          "mt-0.5 font-mono font-bold tabular-nums leading-tight text-[15px]",
+          tone === "blood" ? "text-blood-light" : "text-bone",
+        )}
+      >
+        {value}
+      </p>
     </div>
   )
 }

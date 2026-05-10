@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion, useReducedMotion } from "framer-motion"
-import { Calendar, ChevronRight } from "lucide-react"
+import { Calendar, ChevronRight, Search, X } from "lucide-react"
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
@@ -19,8 +19,24 @@ import { Eyebrow, DisplayHeading, Numeric } from "@/components/typography"
 import { Shimmer } from "@/components/motion/Shimmer"
 import { Section } from "@/components/motion/Section"
 import { NetworkError } from "@/components/ui/network-error"
-import { getEventConfig } from "@/lib/events/config"
+import {
+  EVENT_TYPES,
+  getEventConfig,
+  type EventTypeCode,
+} from "@/lib/events/config"
 import { cn } from "@/lib/cn"
+
+type TypeFilter = "all" | EventTypeCode
+
+function bucketFor(code: string | null): EventTypeCode | null {
+  if (!code) return null
+  if (code === "fcu") return "fcu"
+  if (code === "oak" || code === "goa" || code === "sgoa") return "oak"
+  if (code === "gw_daily" || code === "gw-sl" || code === "gw-fh")
+    return "gw_daily"
+  if (code === "gw_campaign") return "gw_campaign"
+  return null
+}
 
 interface EventRow {
   id: string
@@ -46,6 +62,8 @@ export default function EventsPage() {
   const [events, setEvents] = useState<EventRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all")
+  const [query, setQuery] = useState("")
 
   const loadEvents = async () => {
     setError(null)
@@ -76,26 +94,54 @@ export default function EventsPage() {
     loadEvents()
   }, [])
 
+  const filtered = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase()
+    return events.filter((ev) => {
+      if (typeFilter !== "all") {
+        if (bucketFor(ev.event_type_code) !== typeFilter) return false
+      }
+      if (q) {
+        if (!ev.title.toLocaleLowerCase().includes(q)) return false
+      }
+      return true
+    })
+  }, [events, typeFilter, query])
+
+  const typeCounts = useMemo(() => {
+    const counts: Record<TypeFilter, number> = {
+      all: events.length,
+      fcu: 0,
+      oak: 0,
+      gw_daily: 0,
+      gw_campaign: 0,
+    }
+    for (const ev of events) {
+      const bucket = bucketFor(ev.event_type_code)
+      if (bucket) counts[bucket]++
+    }
+    return counts
+  }, [events])
+
   const grouped = useMemo(() => {
     const out = new Map<string, EventRow[]>()
-    for (const ev of events) {
+    for (const ev of filtered) {
       const key = MONTH_FORMAT.format(new Date(ev.created_at))
       if (!out.has(key)) out.set(key, [])
       out.get(key)!.push(ev)
     }
     return out
-  }, [events])
+  }, [filtered])
 
   const placementCounts = useMemo(() => {
     const counts = { gold: 0, silver: 0, bronze: 0 }
-    for (const e of events) {
+    for (const e of filtered) {
       const p = e.faction_result_json?.placement
       if (p === 1) counts.gold++
       else if (p === 2) counts.silver++
       else if (p === 3) counts.bronze++
     }
     return counts
-  }, [events])
+  }, [filtered])
 
   return (
     <>
@@ -126,7 +172,7 @@ export default function EventsPage() {
 
             {!isLoading && events.length > 0 && (
               <div className="mt-6 grid grid-cols-4 gap-2 md:gap-3">
-                <SummaryTile label="Total" value={events.length} accent="ember" />
+                <SummaryTile label="Showing" value={filtered.length} accent="ember" />
                 <SummaryTile
                   label="Gold"
                   value={placementCounts.gold}
@@ -143,6 +189,16 @@ export default function EventsPage() {
                   accent="bronze"
                 />
               </div>
+            )}
+
+            {!isLoading && events.length > 0 && (
+              <FilterBar
+                typeFilter={typeFilter}
+                onTypeChange={setTypeFilter}
+                query={query}
+                onQueryChange={setQuery}
+                counts={typeCounts}
+              />
             )}
           </div>
         </section>
@@ -165,6 +221,13 @@ export default function EventsPage() {
             </div>
           ) : events.length === 0 ? (
             <EmptyArchive />
+          ) : filtered.length === 0 ? (
+            <EmptyFiltered
+              onReset={() => {
+                setTypeFilter("all")
+                setQuery("")
+              }}
+            />
           ) : (
             <div className="space-y-8 md:space-y-10">
               {Array.from(grouped.entries()).map(
@@ -381,6 +444,112 @@ function SummaryTile({
       >
         <Numeric value={value} format="raw" />
       </div>
+    </div>
+  )
+}
+
+function FilterBar({
+  typeFilter,
+  onTypeChange,
+  query,
+  onQueryChange,
+  counts,
+}: {
+  typeFilter: TypeFilter
+  onTypeChange: (v: TypeFilter) => void
+  query: string
+  onQueryChange: (v: string) => void
+  counts: Record<TypeFilter, number>
+}) {
+  const types: { value: TypeFilter; label: string; abbrev: string }[] = [
+    { value: "all", label: "All", abbrev: "ALL" },
+    { value: "fcu", label: "FCU", abbrev: EVENT_TYPES.fcu.abbrev },
+    { value: "oak", label: "Oak", abbrev: EVENT_TYPES.oak.abbrev },
+    {
+      value: "gw_daily",
+      label: "GW Daily",
+      abbrev: EVENT_TYPES.gw_daily.abbrev,
+    },
+  ]
+  return (
+    <div className="mt-5 space-y-2.5">
+      <div
+        role="tablist"
+        aria-label="Filter by event type"
+        className="flex gap-1.5 overflow-x-auto -mx-1 px-1 scrollbar-hide"
+      >
+        {types.map((t) => {
+          const active = typeFilter === t.value
+          const count = counts[t.value] ?? 0
+          return (
+            <button
+              key={t.value}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onTypeChange(t.value)}
+              className={cn(
+                "flex-shrink-0 min-h-[36px] inline-flex items-center gap-1.5 rounded-full px-3 text-[11px] font-bold uppercase tracking-[0.14em] border transition-all active:scale-[0.97]",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+                active
+                  ? "bg-ember text-ink border-ember"
+                  : "bg-ink/45 text-bone/65 border-ash hover:text-bone hover:border-ember/40",
+              )}
+            >
+              <span>{t.label}</span>
+              <span
+                className={cn(
+                  "font-mono tabular-nums text-[10px]",
+                  active ? "text-ink/65" : "text-bone/45",
+                )}
+              >
+                {count}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+      <div className="relative">
+        <Search
+          size={14}
+          aria-hidden="true"
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-bone/45"
+        />
+        <input
+          type="search"
+          placeholder="Search event titles"
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          className="w-full bg-ink/55 border border-ash rounded-lg pl-9 pr-9 py-2.5 text-[13px] text-bone placeholder-bone/35 focus:outline-none focus:border-ember/55"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => onQueryChange("")}
+            aria-label="Clear search"
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-bone/55 hover:text-bone"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EmptyFiltered({ onReset }: { onReset: () => void }) {
+  return (
+    <div className="text-center py-12">
+      <p className="text-bone/65 text-sm font-body">
+        No events match your filters.
+      </p>
+      <button
+        type="button"
+        onClick={onReset}
+        className="mt-3 inline-flex items-center px-4 min-h-[36px] rounded-md border border-ember/50 text-ember text-[11px] font-bold uppercase tracking-[0.16em] hover:bg-ember/10"
+      >
+        Reset filters
+      </button>
     </div>
   )
 }

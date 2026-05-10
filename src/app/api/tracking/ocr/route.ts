@@ -1,5 +1,5 @@
-import { NextRequest } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { NextRequest, NextResponse } from "next/server"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import {
   autoResolveMatch,
   canonicalAlias,
@@ -14,6 +14,7 @@ import {
   type GWDailyMeta,
   type OakReportCard,
 } from "@/lib/events/config"
+import { formatGWDailyTitle } from "@/lib/gw/schedule"
 import {
   getOcrPrompt,
   sanitizeOcrJson,
@@ -23,540 +24,607 @@ import { ensureEventTypes } from "@/lib/events/seed"
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 
-function sendProgress(encoder: TextEncoder, controller: ReadableStreamDefaultController, data: any) {
-  const line = JSON.stringify(data) + "\n"
-  controller.enqueue(encoder.encode(line))
+/**
+ * Tracking-OCR upload endpoint — fire-and-forget background processing.
+ *
+ * The client POSTs the screenshots, we synchronously:
+ *   1. Validate inputs.
+ *   2. Buffer the screenshot bytes (so we don't depend on the request body
+ *      staying open).
+ *   3. Create / reset the event row + pre-insert event_screenshots
+ *      placeholders so the status endpoint can report total/done counts
+ *      from the very first poll.
+ *   4. Return `{ eventId, totalFiles }` to the client.
+ *
+ * The heavy work (Gemini OCR per screenshot, fuzzy match, score writes,
+ * review-queue inserts, final publish) is dispatched as a detached promise
+ * so that it CONTINUES even if the client disconnects — phone screen off,
+ * tab switched, app backgrounded, network dropped. The DB is the source of
+ * truth; the global UploadBanner + event detail page poll `/api/tracking/
+ * status/[id]` to surface progress.
+ *
+ * This pattern relies on the Node process staying alive after the HTTP
+ * response is returned, which the VPS deployment (persistent Node, not
+ * serverless functions) guarantees.
+ */
+export async function POST(req: NextRequest) {
+  try {
+    if (!GEMINI_API_KEY) {
+      console.error("[OCR] GEMINI_API_KEY is not set")
+      return NextResponse.json(
+        { error: "Gemini API key not configured" },
+        { status: 500 },
+      )
+    }
+
+    const formData = await req.formData()
+    const screenshotFiles = formData.getAll("screenshots") as File[]
+    const rawEventType = (formData.get("event_type") as string | null) ?? "fcu"
+    const eventTitleInput = (formData.get("event_title") as string | null) ?? ""
+    const factionId = formData.get("faction_id") as string
+    const existingEventId = formData.get("event_id") as string | null
+
+    const gwCampaignId = formData.get("gw_campaign_id") as string | null
+    const gwCycle = formData.get("gw_cycle") as string | null
+    const gwSuperCycle = formData.get("gw_super_cycle") as string | null
+    const gwDayInCycle = formData.get("gw_day_in_cycle") as string | null
+    const gwDayType = formData.get("gw_day_type") as string | null
+    const gwMinPoints = formData.get("gw_min_points") as string | null
+    const gwDeadlineIso = formData.get("gw_deadline_iso") as string | null
+
+    if (!screenshotFiles || screenshotFiles.length === 0) {
+      return NextResponse.json(
+        { error: "No screenshots provided" },
+        { status: 400 },
+      )
+    }
+    if (!factionId) {
+      return NextResponse.json({ error: "Missing faction_id" }, { status: 400 })
+    }
+    if (!existingEventId && !rawEventType) {
+      return NextResponse.json(
+        { error: "Missing event_type" },
+        { status: 400 },
+      )
+    }
+    if (!isEventTypeCode(rawEventType) || rawEventType === "gw_campaign") {
+      return NextResponse.json(
+        {
+          error: `Invalid event_type: ${rawEventType}. Expected one of fcu, oak, gw_daily.`,
+        },
+        { status: 400 },
+      )
+    }
+    const eventType: EventTypeCode = rawEventType
+
+    // GW Daily requires campaign metadata for new events.
+    let gwDailyMeta: GWDailyMeta | null = null
+    if (eventType === "gw_daily" && !existingEventId) {
+      if (
+        !gwCampaignId ||
+        !gwCycle ||
+        !gwDayInCycle ||
+        !gwDayType ||
+        !gwMinPoints ||
+        !gwDeadlineIso
+      ) {
+        return NextResponse.json(
+          { error: "GW Daily requires campaign + day-type metadata." },
+          { status: 400 },
+        )
+      }
+      gwDailyMeta = {
+        campaign_id: gwCampaignId,
+        cycle: gwCycle as GWDailyMeta["cycle"],
+        super_cycle: Number(gwSuperCycle) || 1,
+        day_in_cycle: Number(gwDayInCycle) as GWDailyMeta["day_in_cycle"],
+        day_type: gwDayType as GWDailyMeta["day_type"],
+        min_points: Number(gwMinPoints),
+        deadline_iso: gwDeadlineIso,
+      }
+    }
+
+    // Buffer screenshots upfront so the background worker doesn't depend on
+    // the request body staying open after we respond.
+    const screenshots = await Promise.all(
+      screenshotFiles.map(async (file, index) => ({
+        index,
+        name: file.name,
+        type: file.type || "image/png",
+        buffer: Buffer.from(await file.arrayBuffer()),
+      })),
+    )
+
+    const adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    )
+
+    let eventId: string
+
+    if (existingEventId) {
+      const { data: existingEvent, error: validateError } = await adminClient
+        .from("events")
+        .select("id, faction_id")
+        .eq("id", existingEventId)
+        .single()
+
+      if (validateError || !existingEvent) {
+        return NextResponse.json({ error: "Event not found" }, { status: 404 })
+      }
+      if (existingEvent.faction_id !== factionId) {
+        return NextResponse.json(
+          { error: "Event does not belong to this faction" },
+          { status: 403 },
+        )
+      }
+
+      await adminClient.from("event_scores").delete().eq("event_id", existingEventId)
+      await adminClient
+        .from("review_queue")
+        .delete()
+        .eq("event_id", existingEventId)
+        .is("resolution", null)
+      // Wipe old screenshot placeholders too; we re-insert fresh ones below.
+      await adminClient
+        .from("event_screenshots")
+        .delete()
+        .eq("event_id", existingEventId)
+
+      await adminClient
+        .from("events")
+        .update({ status: "processing" })
+        .eq("id", existingEventId)
+
+      eventId = existingEventId
+    } else {
+      const seed = await ensureEventTypes(adminClient)
+      if (!seed.ok) {
+        console.error("[OCR] event_types seed error:", seed.error)
+        return NextResponse.json(
+          { error: `Failed to ensure event_types: ${seed.error}` },
+          { status: 500 },
+        )
+      }
+
+      // GW Daily: enforce deterministic title + reject duplicates upfront so
+      // officers can't accidentally create two "Massacre" rows for the same
+      // (campaign, super-cycle, day-in-cycle).
+      let resolvedTitle = eventTitleInput.trim()
+      if (gwDailyMeta) {
+        // Find any prior gw_daily for the same campaign + same slot.
+        const { data: existingForSlot } = await adminClient
+          .from("events")
+          .select("id, title")
+          .eq("faction_id", factionId)
+          .eq("event_type_code", "gw_daily")
+          .contains("meta_json", {
+            campaign_id: gwDailyMeta.campaign_id,
+            super_cycle: gwDailyMeta.super_cycle,
+            day_in_cycle: gwDailyMeta.day_in_cycle,
+            cycle: gwDailyMeta.cycle,
+          })
+          .limit(1)
+
+        if (existingForSlot && existingForSlot.length > 0) {
+          return NextResponse.json(
+            {
+              error: `A GW Daily for ${gwDailyMeta.cycle} day ${gwDailyMeta.day_in_cycle} (super-cycle ${gwDailyMeta.super_cycle}) already exists. Use "Update Existing" to replace it.`,
+              code: "duplicate_gw_daily",
+              existingEventId: existingForSlot[0].id,
+            },
+            { status: 409 },
+          )
+        }
+
+        // Always overwrite the user-supplied title with the canonical one.
+        resolvedTitle = formatGWDailyTitle(
+          gwDailyMeta.day_type,
+          gwDailyMeta.cycle,
+          new Date(),
+        )
+      } else if (!resolvedTitle) {
+        return NextResponse.json(
+          { error: "Missing event_title" },
+          { status: 400 },
+        )
+      }
+
+      const newEventRow: Record<string, unknown> = {
+        faction_id: factionId,
+        event_type_code: eventType,
+        title: resolvedTitle,
+        status: "processing",
+      }
+      if (gwDailyMeta) {
+        newEventRow.meta_json = gwDailyMeta
+        newEventRow.starts_at = new Date().toISOString()
+        newEventRow.ends_at = gwDailyMeta.deadline_iso
+      }
+      const { data: eventData, error: eventError } = await adminClient
+        .from("events")
+        .insert(newEventRow)
+        .select("id")
+        .single()
+
+      if (eventError || !eventData) {
+        console.error("[OCR] event insert error:", eventError)
+        return NextResponse.json(
+          { error: "Failed to create event" },
+          { status: 500 },
+        )
+      }
+      eventId = eventData.id
+    }
+
+    // Pre-insert event_screenshots placeholders so /status reports a real
+    // "total" from the first poll. Status starts at "queued" and flips to
+    // "done" or "failed" as the background worker chews through them.
+    const placeholderRows = screenshots.map((s) => ({
+      event_id: eventId,
+      order_index: s.index,
+      ocr_status: "queued" as const,
+    }))
+    const { data: placeholders, error: placeholderError } = await adminClient
+      .from("event_screenshots")
+      .insert(placeholderRows)
+      .select("id, order_index")
+    if (placeholderError) {
+      console.error("[OCR] placeholder insert error:", placeholderError)
+      return NextResponse.json(
+        { error: "Failed to create screenshot placeholders" },
+        { status: 500 },
+      )
+    }
+
+    const idByIndex = new Map<number, string>()
+    for (const p of placeholders ?? []) {
+      idByIndex.set(p.order_index, p.id)
+    }
+
+    // Detached background work — survives client disconnect / phone sleep.
+    // We `void` the promise: any error inside is caught + logged and the
+    // worker marks failures in the DB so the UI can react.
+    void processInBackground({
+      adminClient,
+      eventId,
+      eventType,
+      factionId,
+      screenshots: screenshots.map((s) => ({
+        ...s,
+        screenshotId: idByIndex.get(s.index)!,
+      })),
+    }).catch((err) => {
+      console.error("[OCR] background worker fatal error:", err)
+    })
+
+    return NextResponse.json({
+      eventId,
+      totalFiles: screenshots.length,
+      status: "processing",
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[OCR] handler error:", msg)
+    return NextResponse.json(
+      { error: `Server error: ${msg}` },
+      { status: 500 },
+    )
+  }
 }
 
-export async function POST(req: NextRequest) {
-  const encoder = new TextEncoder()
+// ─────────────────────────────────────────────────────────────────────────────
+// Background worker
+// ─────────────────────────────────────────────────────────────────────────────
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        console.log("[FCU-OCR] Starting FCU OCR request")
+interface BufferedShot {
+  index: number
+  name: string
+  type: string
+  buffer: Buffer
+  screenshotId: string
+}
 
-        if (!GEMINI_API_KEY) {
-          console.error("[FCU-OCR] GEMINI_API_KEY is not set!")
-          sendProgress(encoder, controller, { type: "error", message: "Gemini API key not configured" })
-          controller.close()
-          return
-        }
+interface BackgroundJob {
+  adminClient: SupabaseClient
+  eventId: string
+  eventType: EventTypeCode
+  factionId: string
+  screenshots: BufferedShot[]
+}
 
-        const formData = await req.formData()
-        const screenshotFiles = formData.getAll("screenshots") as File[]
-        const rawEventType = (formData.get("event_type") as string | null) ?? "fcu"
-        const eventTitle = formData.get("event_title") as string
-        const factionId = formData.get("faction_id") as string
-        const existingEventId = formData.get("event_id") as string | null
+async function processInBackground(job: BackgroundJob) {
+  const { adminClient, eventId, eventType, factionId, screenshots } = job
 
-        // GW Daily-only fields (officer-confirmed in the upload form)
-        const gwCampaignId = formData.get("gw_campaign_id") as string | null
-        const gwCycle = formData.get("gw_cycle") as string | null
-        const gwSuperCycle = formData.get("gw_super_cycle") as string | null
-        const gwDayInCycle = formData.get("gw_day_in_cycle") as string | null
-        const gwDayType = formData.get("gw_day_type") as string | null
-        const gwMinPoints = formData.get("gw_min_points") as string | null
-        const gwDeadlineIso = formData.get("gw_deadline_iso") as string | null
+  try {
+    const { data: members, error: membersError } = await adminClient
+      .from("members")
+      .select("id, canonical_name, member_aliases(alias)")
+      .eq("is_active", true)
+      .eq("faction_id", factionId)
 
-        if (!screenshotFiles || screenshotFiles.length === 0) {
-          sendProgress(encoder, controller, { type: "error", message: "No screenshots provided" })
-          controller.close()
-          return
-        }
+    if (membersError || !members) {
+      console.error("[OCR/bg] members fetch error:", membersError)
+      await adminClient
+        .from("events")
+        .update({ status: "published" })
+        .eq("id", eventId)
+      return
+    }
 
-        // For new events, we need eventType, title, and factionId
-        // For updates, we only need factionId and event_id
-        if (!factionId) {
-          sendProgress(encoder, controller, { type: "error", message: "Missing faction_id" })
-          controller.close()
-          return
-        }
+    const memberCandidates = members.map((m) => ({
+      id: m.id,
+      canonical_name: m.canonical_name,
+      aliases: (m.member_aliases || []).map(
+        (aliasRow: { alias: string }) => aliasRow.alias,
+      ),
+    }))
+    const rosterHint = memberCandidates
+      .map((member) => member.canonical_name)
+      .join(", ")
+    const ocrPrompt =
+      getOcrPrompt(eventType) +
+      `\n\nThe active ELS roster (use these exact spellings when a name clearly matches): ${rosterHint}`
 
-        if (!existingEventId && (!rawEventType || !eventTitle)) {
-          sendProgress(encoder, controller, { type: "error", message: "Missing event_type or event_title" })
-          controller.close()
-          return
-        }
+    const allRows: Array<{
+      rank: number
+      player_name: string
+      points: number
+      accept_current: number | null
+      accept_max: number | null
+    }> = []
+    const reviewQueueItems: Array<Record<string, unknown>> = []
+    const autoAliasRows: Array<{
+      member_id: string
+      alias: string
+      source: string
+      confidence: number
+    }> = []
+    const seenRowKeys = new Set<string>()
+    let oakHeaderAccumulator: OakReportCard | null = null
 
-        // Validate event_type. Anything unknown is a hard error — we can't pick a prompt.
-        if (!isEventTypeCode(rawEventType) || rawEventType === "gw_campaign") {
-          sendProgress(encoder, controller, {
-            type: "error",
-            message: `Invalid event_type: ${rawEventType}. Expected one of fcu, oak, gw_daily.`,
-          })
-          controller.close()
-          return
-        }
-        const eventType: EventTypeCode = rawEventType
+    for (const shot of screenshots) {
+      await adminClient
+        .from("event_screenshots")
+        .update({ ocr_status: "processing" })
+        .eq("id", shot.screenshotId)
 
-        // For GW Daily, the campaign + day-type metadata is required.
-        let gwDailyMeta: GWDailyMeta | null = null
-        if (eventType === "gw_daily" && !existingEventId) {
-          if (!gwCampaignId || !gwCycle || !gwDayInCycle || !gwDayType || !gwMinPoints || !gwDeadlineIso) {
-            sendProgress(encoder, controller, {
-              type: "error",
-              message: "GW Daily requires campaign + day-type metadata.",
-            })
-            controller.close()
-            return
-          }
-          gwDailyMeta = {
-            campaign_id: gwCampaignId,
-            cycle: gwCycle as GWDailyMeta["cycle"],
-            super_cycle: Number(gwSuperCycle) || 1,
-            day_in_cycle: Number(gwDayInCycle) as GWDailyMeta["day_in_cycle"],
-            day_type: gwDayType as GWDailyMeta["day_type"],
-            min_points: Number(gwMinPoints),
-            deadline_iso: gwDeadlineIso,
-          }
-        }
+      const base64 = shot.buffer.toString("base64")
+      const url = new URL(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent",
+      )
+      url.searchParams.set("key", GEMINI_API_KEY!)
 
-        sendProgress(encoder, controller, { type: "start", totalFiles: screenshotFiles.length })
-        console.log(`[FCU-OCR] Processing ${screenshotFiles.length} screenshots ${existingEventId ? `(updating event ${existingEventId})` : `for ${eventTitle}`}`)
+      const maxRetries = 3
+      const baseDelay = 1000
+      let geminiResponse: Response | null = null
+      let lastErr: unknown = null
 
-        const adminClient = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.SUPABASE_SERVICE_ROLE_KEY!
-        )
-
-        let eventId: string
-
-        if (existingEventId) {
-          // Validate event belongs to this faction
-          const { data: existingEvent, error: validateError } = await adminClient
-            .from("events")
-            .select("id, faction_id")
-            .eq("id", existingEventId)
-            .single()
-
-          if (validateError || !existingEvent) {
-            console.error("[FCU-OCR] Event validation error:", validateError)
-            sendProgress(encoder, controller, { type: "error", message: "Event not found" })
-            controller.close()
-            return
-          }
-
-          if (existingEvent.faction_id !== factionId) {
-            sendProgress(encoder, controller, { type: "error", message: "Event does not belong to this faction" })
-            controller.close()
-            return
-          }
-
-          // Delete existing event_scores for this event (clean slate)
-          const { error: deleteScoresError } = await adminClient
-            .from("event_scores")
-            .delete()
-            .eq("event_id", existingEventId)
-
-          if (deleteScoresError) {
-            console.error("[FCU-OCR] Delete scores error:", deleteScoresError)
-            sendProgress(encoder, controller, { type: "error", message: "Failed to clear existing scores" })
-            controller.close()
-            return
-          }
-
-          // Delete unresolved review queue items
-          const { error: deleteQueueError } = await adminClient
-            .from("review_queue")
-            .delete()
-            .eq("event_id", existingEventId)
-            .is("resolution", null)
-
-          if (deleteQueueError) {
-            console.error("[FCU-OCR] Delete queue error:", deleteQueueError)
-          }
-
-          // Mark event as processing
-          await adminClient
-            .from("events")
-            .update({ status: "processing" })
-            .eq("id", existingEventId)
-
-          eventId = existingEventId
-          console.log(`[FCU-OCR] Reusing event ${eventId} (cleared old scores + queue)`)
-          sendProgress(encoder, controller, { type: "event_reused", eventId })
-        } else {
-          // Self-heal: ensure the event_type code exists before inserting.
-          // Without this, the FK constraint events.event_type_code → event_types.code
-          // can reject the insert in environments where the SQL migration hasn't
-          // been applied yet.
-          const seed = await ensureEventTypes(adminClient)
-          if (!seed.ok) {
-            console.error("[FCU-OCR] event_types seed error:", seed.error)
-            sendProgress(encoder, controller, {
-              type: "error",
-              message: `Failed to ensure event_types: ${seed.error}`,
-            })
-            controller.close()
-            return
-          }
-
-          // Create new event record
-          const newEventRow: Record<string, unknown> = {
-            faction_id: factionId,
-            event_type_code: eventType,
-            title: eventTitle,
-            status: "processing",
-          }
-          if (gwDailyMeta) {
-            // Stash the campaign + day-type metadata so the entire app can derive
-            // schedule, threshold, and progress from this single source.
-            newEventRow.meta_json = gwDailyMeta
-            newEventRow.starts_at = new Date().toISOString()
-            newEventRow.ends_at = gwDailyMeta.deadline_iso
-          }
-          const { data: eventData, error: eventError } = await adminClient
-            .from("events")
-            .insert(newEventRow)
-            .select("id")
-            .single()
-
-          if (eventError || !eventData) {
-            console.error("[FCU-OCR] Event creation error:", JSON.stringify(eventError))
-            sendProgress(encoder, controller, { type: "error", message: "Failed to create event" })
-            controller.close()
-            return
-          }
-
-          eventId = eventData.id
-          console.log(`[FCU-OCR] Created event ${eventId}`)
-          sendProgress(encoder, controller, { type: "event_created", eventId })
-        }
-
-        // Get all active members and known OCR aliases for matching.
-        const { data: members, error: membersError } = await adminClient
-          .from("members")
-          .select("id, canonical_name, member_aliases(alias)")
-          .eq("is_active", true)
-          .eq("faction_id", factionId)
-
-        if (membersError || !members) {
-          console.error("[FCU-OCR] Members fetch error:", membersError)
-          sendProgress(encoder, controller, { type: "error", message: "Failed to fetch members" })
-          controller.close()
-          return
-        }
-
-        const memberCandidates = members.map(m => ({
-          id: m.id,
-          canonical_name: m.canonical_name,
-          aliases: (m.member_aliases || []).map((aliasRow: { alias: string }) => aliasRow.alias),
-        }))
-        const rosterHint = memberCandidates
-          .map((member) => member.canonical_name)
-          .join(", ")
-
-        const allRows: any[] = []
-        const reviewQueueItems: any[] = []
-        const autoAliasRows: Array<{ member_id: string; alias: string; source: string; confidence: number }> = []
-        const seenRowKeys = new Set<string>()
-        // Oak: header data is harvested across multiple screenshots; whichever shot
-        // shows the "Glory of Oakvale Faction Results" card supplies it.
-        let oakHeaderAccumulator: OakReportCard | null = null
-
-        // gw_campaign was already rejected at validation; this is always one of
-        // the OCR-uploadable types (fcu | oak | gw_daily).
-        const ocrPrompt =
-          getOcrPrompt(eventType) +
-          `\n\nThe active ELS roster (use these exact spellings when a name clearly matches): ${rosterHint}`
-
-        // Process each screenshot with Gemini
-        for (let i = 0; i < screenshotFiles.length; i++) {
-          const file = screenshotFiles[i]
-          sendProgress(encoder, controller, {
-            type: "processing",
-            fileNumber: i + 1,
-            fileName: file.name,
-            totalFiles: screenshotFiles.length,
-          })
-          console.log(`[FCU-OCR] Processing screenshot ${i + 1}/${screenshotFiles.length}: ${file.name}`)
-
-          const buffer = await file.arrayBuffer()
-          const base64 = Buffer.from(buffer).toString("base64")
-
-          let geminiResponse = null
-          const maxRetries = 3
-          const baseDelay = 1000
-
-          const url = new URL(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent"
-          )
-          url.searchParams.set("key", GEMINI_API_KEY!)
-
-          for (let attempt = 0; attempt < maxRetries; attempt++) {
-            try {
-              geminiResponse = await fetch(url.toString(), {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  contents: [
-                    {
-                      parts: [
-                        {
-                          text: ocrPrompt,
-                        },
-                        {
-                          inline_data: {
-                            mime_type: file.type || "image/png",
-                            data: base64,
-                          },
-                        },
-                      ],
-                    },
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          geminiResponse = await fetch(url.toString(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    { text: ocrPrompt },
+                    { inline_data: { mime_type: shot.type, data: base64 } },
                   ],
-                }),
-              })
-
-              console.log(`[FCU-OCR] Screenshot ${i + 1} response: ${geminiResponse.status}`)
-
-              if (geminiResponse.ok) {
-                break
-              }
-
-              if (geminiResponse.status === 503) {
-                if (attempt < maxRetries - 1) {
-                  const delay = baseDelay * Math.pow(2, attempt)
-                  console.log(`[FCU-OCR] Retrying in ${delay}ms...`)
-                  await new Promise((resolve) => setTimeout(resolve, delay))
-                  continue
-                }
-              }
-
-              const errorText = await geminiResponse.text()
-              console.error(`[FCU-OCR] Gemini error on screenshot ${i + 1}:`, geminiResponse.status, errorText)
-              throw new Error(`Gemini failed: ${geminiResponse.status}`)
-            } catch (err) {
-              console.error(`[FCU-OCR] Fetch error on screenshot ${i + 1}, attempt ${attempt + 1}:`, err)
-              if (attempt < maxRetries - 1) {
-                const delay = baseDelay * Math.pow(2, attempt)
-                await new Promise((resolve) => setTimeout(resolve, delay))
-                continue
-              }
-              throw err
-            }
+                },
+              ],
+            }),
+          })
+          if (geminiResponse.ok) break
+          if (geminiResponse.status === 503 && attempt < maxRetries - 1) {
+            await sleep(baseDelay * Math.pow(2, attempt))
+            continue
           }
-
-          if (!geminiResponse || !geminiResponse.ok) {
-            sendProgress(encoder, controller, { type: "error", message: `Failed to process screenshot ${i + 1}` })
-            controller.close()
-            return
+          const text = await geminiResponse.text()
+          throw new Error(`Gemini ${geminiResponse.status}: ${text}`)
+        } catch (err) {
+          lastErr = err
+          if (attempt < maxRetries - 1) {
+            await sleep(baseDelay * Math.pow(2, attempt))
+            continue
           }
+        }
+      }
 
-          const geminiData = await geminiResponse.json()
-          const responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}"
-          const cleaned = sanitizeOcrJson(responseText)
+      if (!geminiResponse || !geminiResponse.ok) {
+        console.error(
+          `[OCR/bg] Screenshot ${shot.index} failed permanently:`,
+          lastErr,
+        )
+        await adminClient
+          .from("event_screenshots")
+          .update({ ocr_status: "failed" })
+          .eq("id", shot.screenshotId)
+        continue
+      }
 
-          let payload: OcrPayload | null = null
-          try {
-            const sanitized = cleaned
-              .replace(/\\u(?![0-9a-fA-F]{4})/g, "\\\\u")
-              .replace(/([^\\])\\(?!["\\/bfnrtu])/g, "$1\\\\")
-            payload = JSON.parse(sanitized) as OcrPayload
-          } catch (err) {
-            console.error(`[FCU-OCR] Parse error on screenshot ${i + 1}`, err)
-            try {
-              const fallback = cleaned.replace(/\\[^"\\/bfnrtu]/g, "")
-              payload = JSON.parse(fallback) as OcrPayload
-            } catch (fallbackErr) {
-              console.error(`[FCU-OCR] Fallback parse error:`, fallbackErr)
-              sendProgress(encoder, controller, {
-                type: "error",
-                message: `Failed to parse screenshot ${i + 1}`,
-              })
-              controller.close()
-              return
-            }
-          }
+      const geminiData = await geminiResponse.json()
+      const responseText =
+        geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}"
+      const cleaned = sanitizeOcrJson(responseText)
 
-          if (!payload || !Array.isArray(payload.rows)) {
-            payload = { kind: eventType as Exclude<EventTypeCode, "gw_campaign">, rows: [] } as OcrPayload
-          }
-
-          // For Oak: capture the report-card header. The same field appearing on
-          // multiple shots is fine — last write wins, but Gemini only emits header
-          // for screenshots that actually show the faction-results card.
-          if (eventType === "oak" && payload.kind === "oak" && payload.header) {
-            const h = payload.header
-            const merged: OakReportCard = {
-              placement: Number(h.placement) || oakHeaderAccumulator?.placement || 0,
-              class_points:
-                Number(h.class_points) || oakHeaderAccumulator?.class_points || 0,
-              class_points_delta:
-                Number(h.class_points_delta) || oakHeaderAccumulator?.class_points_delta || 0,
-              battle_stats: {
-                total: Number(h.battle_stats?.total) || oakHeaderAccumulator?.battle_stats.total || 0,
-                kill: Number(h.battle_stats?.kill) || oakHeaderAccumulator?.battle_stats.kill || 0,
-                occupation:
-                  Number(h.battle_stats?.occupation) || oakHeaderAccumulator?.battle_stats.occupation || 0,
-              },
-              best_of_all: {
-                total: h.best_of_all?.total
-                  ? { name: String(h.best_of_all.total.name), value: Number(h.best_of_all.total.value) }
-                  : oakHeaderAccumulator?.best_of_all.total || { name: "", value: 0 },
-                kill: h.best_of_all?.kill
-                  ? { name: String(h.best_of_all.kill.name), value: Number(h.best_of_all.kill.value) }
-                  : oakHeaderAccumulator?.best_of_all.kill || { name: "", value: 0 },
-                occupation: h.best_of_all?.occupation
-                  ? {
-                      name: String(h.best_of_all.occupation.name),
-                      value: Number(h.best_of_all.occupation.value),
-                    }
-                  : oakHeaderAccumulator?.best_of_all.occupation || { name: "", value: 0 },
-              },
-            }
-            oakHeaderAccumulator = merged
-          }
-
-          // Normalize the leaderboard rows. FCU has accept fields; Oak/GW Daily don't.
-          const rows = payload.rows.map((row: any) => ({
-            rank: Number(row.rank),
-            player_name: String(row.player_name ?? ""),
-            points: Number(row.points),
-            accept_current: row.accept_current != null ? Number(row.accept_current) : null,
-            accept_max: row.accept_max != null ? Number(row.accept_max) : null,
-          }))
-
-          console.log(`[FCU-OCR] Screenshot ${i + 1} extracted ${rows.length} rows (kind=${eventType})`)
-
-          // Store screenshot + ocr result
-          const { data: screenshotData, error: screenshotError } = await adminClient
+      let payload: OcrPayload | null = null
+      try {
+        const sanitized = cleaned
+          .replace(/\\u(?![0-9a-fA-F]{4})/g, "\\\\u")
+          .replace(/([^\\])\\(?!["\\/bfnrtu])/g, "$1\\\\")
+        payload = JSON.parse(sanitized) as OcrPayload
+      } catch {
+        try {
+          const fallback = cleaned.replace(/\\[^"\\/bfnrtu]/g, "")
+          payload = JSON.parse(fallback) as OcrPayload
+        } catch (fallbackErr) {
+          console.error("[OCR/bg] parse failed:", fallbackErr)
+          await adminClient
             .from("event_screenshots")
-            .insert({
+            .update({ ocr_status: "failed" })
+            .eq("id", shot.screenshotId)
+          continue
+        }
+      }
+      if (!payload || !Array.isArray(payload.rows)) {
+        payload = {
+          kind: eventType as Exclude<EventTypeCode, "gw_campaign">,
+          rows: [],
+        } as OcrPayload
+      }
+
+      // Oak header accumulation.
+      if (eventType === "oak" && payload.kind === "oak" && payload.header) {
+        const h = payload.header
+        const prevCard: OakReportCard = oakHeaderAccumulator ?? {
+          placement: 0,
+          class_points: 0,
+          class_points_delta: 0,
+          battle_stats: { total: 0, kill: 0, occupation: 0 },
+          best_of_all: {
+            total: { name: "", value: 0 },
+            kill: { name: "", value: 0 },
+            occupation: { name: "", value: 0 },
+          },
+        }
+        oakHeaderAccumulator = {
+          placement: Number(h.placement) || prevCard.placement,
+          class_points: Number(h.class_points) || prevCard.class_points,
+          class_points_delta:
+            Number(h.class_points_delta) || prevCard.class_points_delta,
+          battle_stats: {
+            total: Number(h.battle_stats?.total) || prevCard.battle_stats.total,
+            kill: Number(h.battle_stats?.kill) || prevCard.battle_stats.kill,
+            occupation:
+              Number(h.battle_stats?.occupation) ||
+              prevCard.battle_stats.occupation,
+          },
+          best_of_all: {
+            total: h.best_of_all?.total
+              ? {
+                  name: String(h.best_of_all.total.name),
+                  value: Number(h.best_of_all.total.value),
+                }
+              : prevCard.best_of_all.total,
+            kill: h.best_of_all?.kill
+              ? {
+                  name: String(h.best_of_all.kill.name),
+                  value: Number(h.best_of_all.kill.value),
+                }
+              : prevCard.best_of_all.kill,
+            occupation: h.best_of_all?.occupation
+              ? {
+                  name: String(h.best_of_all.occupation.name),
+                  value: Number(h.best_of_all.occupation.value),
+                }
+              : prevCard.best_of_all.occupation,
+          },
+        }
+      }
+
+      const rows = payload.rows.map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          rank: Number(r.rank),
+          player_name: String(r.player_name ?? ""),
+          points: Number(r.points),
+          accept_current:
+            r.accept_current != null ? Number(r.accept_current) : null,
+          accept_max: r.accept_max != null ? Number(r.accept_max) : null,
+        }
+      })
+
+      await adminClient
+        .from("event_screenshots")
+        .update({ ocr_status: "done", ocr_result_json: rows })
+        .eq("id", shot.screenshotId)
+
+      // Match + write event_scores + queue ambiguous rows.
+      for (const row of rows) {
+        if (!isLikelyFactionMemberName(row.player_name)) continue
+
+        const rowKey = `${row.rank}:${uniqueNameKey(row.player_name)}:${row.points}`
+        if (seenRowKeys.has(rowKey)) continue
+        seenRowKeys.add(rowKey)
+
+        const candidates = fuzzyMatch(row.player_name, memberCandidates)
+        const autoResolved = autoResolveMatch(candidates)
+
+        if (autoResolved) {
+          await adminClient.from("event_scores").upsert(
+            {
               event_id: eventId,
-              order_index: i,
-              ocr_status: "done",
-              ocr_result_json: rows,
+              member_id: autoResolved.member_id,
+              rank_value: row.rank,
+              points: row.points,
+              accept_current: row.accept_current,
+              accept_max: row.accept_max,
+              raw_ocr_row_json: row,
+            },
+            { onConflict: "event_id,member_id" },
+          )
+          if (shouldSaveAlias(row.player_name, autoResolved)) {
+            autoAliasRows.push({
+              member_id: autoResolved.member_id,
+              alias: canonicalAlias(row.player_name),
+              source: "ocr",
+              confidence: Math.min(0.99, autoResolved.confidence),
             })
-            .select("id")
-            .single()
-
-          if (screenshotError || !screenshotData) {
-            console.error("[FCU-OCR] Screenshot record error:", screenshotError)
-            sendProgress(encoder, controller, { type: "error", message: "Failed to store screenshot" })
-            controller.close()
-            return
           }
-
-          // Match each row. Exact/alias/strong normalized matches are auto-resolved;
-          // only genuinely ambiguous names are sent to officers.
-          for (const row of rows) {
-            if (!isLikelyFactionMemberName(row.player_name)) continue
-
-            const rowKey = `${row.rank}:${uniqueNameKey(row.player_name)}:${row.points}`
-            if (seenRowKeys.has(rowKey)) continue
-            seenRowKeys.add(rowKey)
-
-            const candidates = fuzzyMatch(row.player_name, memberCandidates)
-            const autoResolved = autoResolveMatch(candidates)
-
-            if (autoResolved) {
-              await adminClient.from("event_scores").upsert({
-                event_id: eventId,
-                member_id: autoResolved.member_id,
-                rank_value: row.rank,
-                points: row.points,
-                accept_current: row.accept_current,
-                accept_max: row.accept_max,
-                raw_ocr_row_json: row,
-              }, {
-                onConflict: "event_id,member_id",
-              })
-
-              if (shouldSaveAlias(row.player_name, autoResolved)) {
-                autoAliasRows.push({
-                  member_id: autoResolved.member_id,
-                  alias: canonicalAlias(row.player_name),
-                  source: "ocr",
-                  confidence: Math.min(0.99, autoResolved.confidence),
-                })
-              }
-            } else {
-              reviewQueueItems.push({
-                event_id: eventId,
-                screenshot_id: screenshotData.id,
-                raw_name: row.player_name,
-                candidates_json: candidates.slice(0, 3),
-                raw_ocr_row_json: row,
-              })
-            }
-          }
-
-          allRows.push(...rows)
-
-          sendProgress(encoder, controller, {
-            type: "extracted",
-            fileNumber: i + 1,
-            fileName: file.name,
-            rowCount: rows.length,
+        } else {
+          reviewQueueItems.push({
+            event_id: eventId,
+            screenshot_id: shot.screenshotId,
+            raw_name: row.player_name,
+            candidates_json: candidates.slice(0, 3),
+            raw_ocr_row_json: row,
           })
         }
-
-        if (autoAliasRows.length > 0) {
-          const uniqueAliases = Array.from(
-            new Map(autoAliasRows.map((row) => [`${row.member_id}:${row.alias}`, row])).values(),
-          )
-          const { error: aliasError } = await adminClient
-            .from("member_aliases")
-            .upsert(uniqueAliases, { onConflict: "member_id,alias" })
-
-          if (aliasError) {
-            console.error("[FCU-OCR] Alias upsert error:", aliasError)
-          }
-        }
-
-        // Batch insert review queue items
-        if (reviewQueueItems.length > 0) {
-          const { error: reviewError } = await adminClient
-            .from("review_queue")
-            .insert(reviewQueueItems)
-
-          if (reviewError) {
-            console.error("[FCU-OCR] Review queue insert error:", reviewError)
-            sendProgress(encoder, controller, { type: "error", message: "Failed to create review queue" })
-            controller.close()
-            return
-          }
-        }
-
-        // For Oak: persist the report-card header (placement, battle stats,
-        // best-of-all heroes) into faction_result_json. The Oak event detail
-        // page reads from this column and renders the full report card.
-        const publishUpdate: Record<string, unknown> = { status: "published" }
-        if (eventType === "oak" && oakHeaderAccumulator) {
-          publishUpdate.faction_result_json = oakHeaderAccumulator
-        }
-        await adminClient
-          .from("events")
-          .update(publishUpdate)
-          .eq("id", eventId)
-
-        console.log(`[FCU-OCR] Total rows extracted: ${allRows.length}, review queue: ${reviewQueueItems.length}`)
-
-        sendProgress(encoder, controller, {
-          type: "complete",
-          eventId,
-          totalRows: allRows.length,
-          autoResolved: allRows.length - reviewQueueItems.length,
-          reviewQueueCount: reviewQueueItems.length,
-        })
-
-        controller.close()
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error)
-        const errorStack = error instanceof Error ? error.stack : ""
-        console.error("[FCU-OCR] Error:", errorMsg)
-        console.error("[FCU-OCR] Stack:", errorStack)
-        sendProgress(encoder, controller, { type: "error", message: `Internal server error: ${errorMsg}` })
-        controller.close()
       }
-    },
-  })
+      allRows.push(...rows)
+    }
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "application/x-ndjson",
-      "Cache-Control": "no-cache",
-    },
-  })
+    if (autoAliasRows.length > 0) {
+      const uniqueAliases = Array.from(
+        new Map(
+          autoAliasRows.map((row) => [`${row.member_id}:${row.alias}`, row]),
+        ).values(),
+      )
+      await adminClient
+        .from("member_aliases")
+        .upsert(uniqueAliases, { onConflict: "member_id,alias" })
+    }
+
+    if (reviewQueueItems.length > 0) {
+      await adminClient.from("review_queue").insert(reviewQueueItems)
+    }
+
+    const publishUpdate: Record<string, unknown> = { status: "published" }
+    if (eventType === "oak" && oakHeaderAccumulator) {
+      publishUpdate.faction_result_json = oakHeaderAccumulator
+    }
+    await adminClient.from("events").update(publishUpdate).eq("id", eventId)
+    console.log(
+      `[OCR/bg] event ${eventId} published — ${allRows.length} rows, ${reviewQueueItems.length} queued`,
+    )
+  } catch (err) {
+    console.error("[OCR/bg] worker error:", err)
+    // Mark the event published anyway so the UI doesn't stay stuck on
+    // "processing" forever. The status endpoint already exposes failed-shot
+    // counts; the officer can choose to "Update Existing" and re-upload.
+    try {
+      await adminClient
+        .from("events")
+        .update({ status: "published" })
+        .eq("id", eventId)
+    } catch (publishErr) {
+      console.error("[OCR/bg] failed to publish after error:", publishErr)
+    }
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms))
 }

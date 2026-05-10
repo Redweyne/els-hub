@@ -7,7 +7,13 @@ import { useParams } from "next/navigation"
 import Link from "next/link"
 import { createBrowserClient } from "@supabase/ssr"
 import { motion, useReducedMotion } from "framer-motion"
-import { Calendar, ChevronRight, Sword, TrendingUp } from "lucide-react"
+import {
+  Calendar,
+  ChevronRight,
+  Share2 as ShareIcon,
+  Sword,
+  TrendingUp,
+} from "lucide-react"
 
 import { Header } from "@/components/layout/Header"
 import { BottomNav } from "@/components/layout/BottomNav"
@@ -389,6 +395,24 @@ export default function MemberProfilePage() {
         </section>
 
         <div className="relative px-5 md:px-8 max-w-xl mx-auto mt-6 md:mt-8 space-y-10 md:space-y-12">
+          <MemberQuickLinks
+            memberId={member.id}
+            memberName={member.canonical_name}
+            hasFcu={enrichedScores.some((s) => s.eventTypeCode === "fcu")}
+            hasOak={enrichedScores.some(
+              (s) =>
+                s.eventTypeCode === "oak" ||
+                s.eventTypeCode === "goa" ||
+                s.eventTypeCode === "sgoa",
+            )}
+            hasGw={enrichedScores.some(
+              (s) =>
+                s.eventTypeCode === "gw_daily" ||
+                s.eventTypeCode === "gw-sl" ||
+                s.eventTypeCode === "gw-fh",
+            )}
+          />
+
           <Section from="up" immediate>
             {/*
               Per-Type Performance — three independent cards (FCU / Oak / GW),
@@ -952,5 +976,125 @@ function ProfileSkeleton() {
       </main>
       <BottomNav />
     </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Quick-link bar — share + per-type pulse cross-links. Skips pulse links for
+// event types the member has never appeared in.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function MemberQuickLinks({
+  memberId,
+  memberName,
+  hasFcu,
+  hasOak,
+  hasGw,
+}: {
+  memberId: string
+  memberName: string
+  hasFcu: boolean
+  hasOak: boolean
+  hasGw: boolean
+}) {
+  const [shareState, setShareState] = useState<"idle" | "copied">("idle")
+
+  const handleShare = async () => {
+    if (typeof window === "undefined") return
+    const url = `${window.location.origin}${window.location.pathname}`
+    const text = `${memberName} on ELYSIUM tracker`
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        typeof navigator.share === "function"
+      ) {
+        await navigator.share({ title: text, url })
+        return
+      }
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard?.writeText
+      ) {
+        await navigator.clipboard.writeText(url)
+        setShareState("copied")
+        window.setTimeout(() => setShareState("idle"), 2000)
+      }
+    } catch {
+      // User canceled the share sheet — fine.
+    }
+  }
+
+  const pulseLinks: { code: string; label: string; visible: boolean }[] = [
+    { code: "fcu", label: "FCU Pulse", visible: hasFcu },
+    { code: "oak", label: "Oak Pulse", visible: hasOak },
+    { code: "gw_daily", label: "GW Pulse", visible: hasGw },
+  ]
+  const visiblePulse = pulseLinks.filter((p) => p.visible)
+  if (visiblePulse.length === 0 && !hasFcu && !hasOak && !hasGw) {
+    // Member has no scores at all — share-only.
+    return (
+      <div className="flex items-center gap-2">
+        <ShareButton state={shareState} onClick={handleShare} />
+        <span className="text-[11px] text-bone/45 font-body">
+          No events recorded yet.
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-2 overflow-x-auto -mx-1 px-1 scrollbar-hide">
+      <ShareButton state={shareState} onClick={handleShare} />
+      {visiblePulse.map((p) => (
+        <Link
+          key={p.code}
+          href={`/pulse/${p.code}`}
+          className={cn(
+            "flex-shrink-0 inline-flex items-center gap-1.5 min-h-[36px] px-3 rounded-full text-[11px] font-bold uppercase tracking-[0.14em] border",
+            "bg-ink/45 text-bone/70 border-ash transition-all active:scale-[0.97]",
+            "hover:text-bone hover:border-ember/45 hover:bg-ink/65",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+          )}
+        >
+          <span>{p.label}</span>
+          <ChevronRight size={11} aria-hidden="true" />
+        </Link>
+      ))}
+      <Link
+        href={`/members?focus=${memberId}`}
+        className={cn(
+          "flex-shrink-0 inline-flex items-center min-h-[36px] px-3 rounded-full text-[11px] font-bold uppercase tracking-[0.14em] border",
+          "bg-ink/45 text-bone/65 border-ash transition-all active:scale-[0.97]",
+          "hover:text-bone hover:border-ember/45 hover:bg-ink/65",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+        )}
+      >
+        All members
+      </Link>
+    </div>
+  )
+}
+
+function ShareButton({
+  state,
+  onClick,
+}: {
+  state: "idle" | "copied"
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex-shrink-0 inline-flex items-center gap-1.5 min-h-[36px] px-3 rounded-full text-[11px] font-bold uppercase tracking-[0.14em] border",
+        "bg-ember/15 border-ember/45 text-ember active:scale-[0.97]",
+        "hover:bg-ember/25",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+      )}
+    >
+      <ShareIcon size={12} aria-hidden="true" />
+      <span>{state === "copied" ? "Link copied" : "Share"}</span>
+    </button>
   )
 }

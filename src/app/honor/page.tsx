@@ -33,10 +33,18 @@ interface HonorRow {
 }
 
 interface HallOfFameMember {
-  id: string
+  /** Real members.id if we could resolve the name, else null. */
+  memberId: string | null
   name: string
   tier: string | null
   trophyCount: number
+}
+
+interface MemberDirRow {
+  id: string
+  canonical_name: string
+  rank_tier: string | null
+  aliases?: string[]
 }
 
 const FILTER_OPTIONS: { key: string; label: string; codes: string[] }[] = [
@@ -54,6 +62,7 @@ const FILTER_OPTIONS: { key: string; label: string; codes: string[] }[] = [
 
 export default function HonorWallPage() {
   const [honors, setHonors] = useState<HonorRow[]>([])
+  const [memberDir, setMemberDir] = useState<MemberDirRow[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<string>("all")
@@ -66,19 +75,36 @@ export default function HonorWallPage() {
         process.env.NEXT_PUBLIC_SUPABASE_URL!,
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       )
-      const { data, error: dbError } = await supabase
-        .from("events")
-        .select(
-          "id, title, event_type_code, created_at, faction_result_json",
-        )
-        .eq("status", "published")
-        .order("created_at", { ascending: false })
+      const [{ data, error: dbError }, { data: members }] = await Promise.all([
+        supabase
+          .from("events")
+          .select(
+            "id, title, event_type_code, created_at, faction_result_json",
+          )
+          .eq("status", "published")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("members")
+          .select("id, canonical_name, rank_tier, member_aliases(alias)")
+          .eq("is_active", true),
+      ])
 
       if (dbError) throw dbError
       const filtered = ((data || []) as HonorRow[]).filter(
         (e) => e.faction_result_json?.placement,
       )
       setHonors(filtered)
+      const dir: MemberDirRow[] = (members ?? []).map((m) => {
+        const aliasField = (m as { member_aliases?: { alias: string }[] })
+          .member_aliases
+        return {
+          id: m.id,
+          canonical_name: m.canonical_name,
+          rank_tier: m.rank_tier ?? null,
+          aliases: (aliasField ?? []).map((a) => a.alias),
+        }
+      })
+      setMemberDir(dir)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load")
     } finally {
@@ -138,18 +164,29 @@ export default function HonorWallPage() {
         }
       }
     }
+    // Build a quick name→member lookup using canonical names + aliases.
+    const lookup = new Map<string, MemberDirRow>()
+    for (const m of memberDir) {
+      lookup.set(normalizeName(m.canonical_name), m)
+      for (const a of m.aliases ?? []) {
+        lookup.set(normalizeName(a), m)
+      }
+    }
     const list: HallOfFameMember[] = Array.from(counts.entries())
       .filter(([, c]) => c >= 2)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
-      .map(([name, count]) => ({
-        id: name,
-        name,
-        tier: null,
-        trophyCount: count,
-      }))
+      .map(([name, count]) => {
+        const match = lookup.get(normalizeName(name))
+        return {
+          memberId: match?.id ?? null,
+          name: match?.canonical_name ?? name,
+          tier: match?.rank_tier ?? null,
+          trophyCount: count,
+        }
+      })
     return list
-  }, [honors])
+  }, [honors, memberDir])
 
   return (
     <>
@@ -224,36 +261,68 @@ export default function HonorWallPage() {
                 Members named in &ldquo;Best of All&rdquo; across multiple Oakvale matches.
               </p>
               <ul className="mt-5 grid grid-cols-2 md:grid-cols-3 gap-2.5">
-                {hallOfFame.map((m, idx) => (
-                  <motion.li
-                    key={m.name}
-                    initial={{ opacity: 0, y: 8 }}
-                    whileInView={{ opacity: 1, y: 0 }}
-                    viewport={{ once: true }}
-                    transition={{
-                      duration: 0.5,
-                      delay: Math.min(idx * 0.05, 0.4),
-                      ease: [0.2, 0.8, 0.2, 1],
-                    }}
-                    className="surface-3 rounded-xl border border-ember/30 px-3 py-3 flex items-center gap-2.5"
-                  >
-                    <MemberAvatar
-                      name={m.name}
-                      tier={m.tier ?? "frontliner"}
-                      size={32}
-                      idScope={`hof-${idx}`}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-bone truncate">
-                        {m.name}
-                      </p>
-                      <p className="text-[10px] uppercase tracking-[0.18em] text-ember font-mono mt-0.5 inline-flex items-center gap-1">
-                        <Crown size={9} aria-hidden="true" />
-                        {m.trophyCount}× hero
-                      </p>
-                    </div>
-                  </motion.li>
-                ))}
+                {hallOfFame.map((m, idx) => {
+                  const inner = (
+                    <>
+                      <MemberAvatar
+                        name={m.name}
+                        tier={m.tier ?? "frontliner"}
+                        size={32}
+                        idScope={`hof-${idx}`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-bone truncate">
+                          {m.name}
+                        </p>
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-ember font-mono mt-0.5 inline-flex items-center gap-1">
+                          <Crown size={9} aria-hidden="true" />
+                          {m.trophyCount}× hero
+                        </p>
+                      </div>
+                      {m.memberId && (
+                        <ChevronRight
+                          size={14}
+                          className="text-bone/30 flex-shrink-0"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </>
+                  )
+                  return (
+                    <motion.li
+                      key={m.name}
+                      initial={{ opacity: 0, y: 8 }}
+                      whileInView={{ opacity: 1, y: 0 }}
+                      viewport={{ once: true }}
+                      transition={{
+                        duration: 0.5,
+                        delay: Math.min(idx * 0.05, 0.4),
+                        ease: [0.2, 0.8, 0.2, 1],
+                      }}
+                    >
+                      {m.memberId ? (
+                        <Link
+                          href={`/members/${m.memberId}`}
+                          className={cn(
+                            "surface-3 rounded-xl border border-ember/30 px-3 py-3 flex items-center gap-2.5",
+                            "transition-all duration-150 active:scale-[0.98]",
+                            "hover:border-ember/55 hover:bg-ember/5",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ember focus-visible:ring-offset-2 focus-visible:ring-offset-ink",
+                          )}
+                        >
+                          {inner}
+                        </Link>
+                      ) : (
+                        <div
+                          className="surface-3 rounded-xl border border-ember/30 px-3 py-3 flex items-center gap-2.5"
+                          title={`${m.name} — not on the active roster`}
+                        >
+                          {inner}
+                        </div>
+                      )}
+                    </motion.li>
+                  )
+                })}
               </ul>
             </div>
           )}
@@ -533,4 +602,17 @@ function EmptyHonorWall({ hasFilter }: { hasFilter: boolean }) {
       </p>
     </div>
   )
+}
+
+// Loose name normalization for Hall-of-Fame member lookup. Strips the
+// "[ELS] " tag, Unicode marks, casing, and non-alphanumeric runs so
+// "TopKnife", "[ELS] TopKnife", "topknife" all collapse to one key.
+function normalizeName(name: string): string {
+  return name
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .normalize("NFKC")
+    .normalize("NFD")
+    .replace(/\p{Mark}/gu, "")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "")
+    .toLocaleLowerCase()
 }

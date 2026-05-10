@@ -113,8 +113,8 @@ function SnapshotCard({
       transition={{ duration: 0.4, ease: [0.2, 0.8, 0.2, 1] }}
     >
       <Link
-        href={`/events/${latest.id}`}
-        aria-label={`${cfg.label} — ${events.length} events. Latest: ${latest.title}.`}
+        href={`/pulse/${code}`}
+        aria-label={`${cfg.label} pulse — ${events.length} events. Latest: ${latest.title}.`}
         className={cn(
           "relative block overflow-hidden rounded-2xl",
           "transition-all duration-200 active:scale-[0.99]",

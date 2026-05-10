@@ -204,6 +204,40 @@ export function anchorFromTodayDayType(
 }
 
 /**
+ * Build the canonical GW Daily event title.
+ *
+ * Format: "<DayType> [Hegemony] MM/DD"
+ *   - War cycle:      "Robbing 05/10", "Kingpin 05/11", ...
+ *   - Hegemony cycle: "Robbing Hegemony 05/10", "Kingpin Hegemony 05/11", ...
+ *
+ * Officers don't pick titles; the OCR route stamps this verbatim so two
+ * uploads can never disagree about what to call the same day.
+ */
+export function formatGWDailyTitle(
+  dayType: GWDayType,
+  cycle: GWCycle,
+  when: Date = new Date(),
+): string {
+  const label = dayTypeLabel(dayType)
+  const date = formatMMDDParis(when)
+  return cycle === "hegemony" ? `${label} Hegemony ${date}` : `${label} ${date}`
+}
+
+function dayTypeLabel(dayType: GWDayType): string {
+  const config = GW_DAY_SCHEDULE.find((d) => d.type === dayType)
+  return config?.label ?? dayType
+}
+
+function formatMMDDParis(when: Date): string {
+  const ymd = getParisYMD(when)
+  return `${pad2(ymd.m)}/${pad2(ymd.d)}`
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`
+}
+
+/**
  * Format the human-readable "TODAY: DAY 2 · KINGPIN · 7h 12m" string.
  * Returns the parts so the caller can render them with their own typography.
  */
